@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Branch, Commit, RepoState, SessionSummary, Target } from "../model.ts";
-import { CommitIndex, sameTarget, treeRows } from "./stack.ts";
+import { CommitIndex, currentStack, sameTarget, sharedPrefix, stripPrefix, treeGuides, treeRows, type Guides, type TreeItem } from "./stack.ts";
 import { splitPath } from "./lines.ts";
 import { Chevron, CommentGlyph, Counts, StatusLetter, type FileEntry } from "./FileCard.tsx";
 
@@ -21,33 +21,42 @@ interface Props {
 export const Rail = forwardRef<HTMLInputElement, Props>(function Rail(p, filterRef) {
   const { repo } = p;
   const current = repo.branches.find((b) => b.current);
+  const prefix = sharedPrefix(repo);
   return (
     <aside className="rail" style={{ width: p.width }}>
       <header className="rail-head">
         <span className="repo">{repo.name}</span>
-        <span className="dim">{repo.worktree.branch ?? "detached"}</span>
+        <span className="dim head-branch" title={repo.worktree.branch ?? undefined}>
+          {repo.worktree.branch ? stripPrefix(repo.worktree.branch, prefix) : "detached"}
+        </span>
         <span className="grow" />
         {repo.agentWaiting && <span className="waiting" title="An agent is waiting for your review" />}
       </header>
       <div className="rail-nav">
-        <StackTree {...p} current={current} />
+        <StackTree {...p} current={current} prefix={prefix} />
         {(repo.sessions.length > 0 || repo.lastReviewAt) && <Agent repo={repo} target={p.target} onSelect={p.onSelect} />}
       </div>
-      <Files {...p} ref={filterRef} />
+      <Files {...p} prefix={prefix} ref={filterRef} />
     </aside>
   );
 });
 
+const INDENT = 10;
+const COL = 14;
+const colX = (c: number) => INDENT + c * COL + 6;
+
 function Row({
   active,
-  depth = 0,
+  indent = INDENT,
+  guides,
   onClick,
   children,
   className = "",
   title,
 }: {
   active: boolean;
-  depth?: number;
+  indent?: number;
+  guides?: Guides;
   onClick(e: { shiftKey: boolean }): void;
   children: ReactNode;
   className?: string;
@@ -58,7 +67,7 @@ function Row({
       role="button"
       tabIndex={0}
       className={`row ${className}${active ? " active" : ""}`}
-      style={{ paddingLeft: 10 + Math.min(depth, 8) * 12 }}
+      style={{ paddingLeft: indent }}
       title={title}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onClick={onClick}
@@ -69,18 +78,55 @@ function Row({
         }
       }}
     >
+      {guides && <TreeLines g={guides} />}
       {children}
     </div>
   );
 }
 
-function StackTree({ repo, target, onSelect, current }: Props & { current: Branch | undefined }) {
-  const rows = useMemo(() => treeRows(repo), [repo]);
+function TreeLines({ g }: { g: Guides }) {
+  return (
+    <>
+      {g.through.map((c) => (
+        <i key={`t${c}`} className="tl tl-v" style={{ left: colX(c) }} />
+      ))}
+      {g.elbow !== null && (
+        <>
+          <i className="tl tl-down" style={{ left: colX(g.elbow) }} />
+          <i className="tl tl-h" style={{ left: colX(g.elbow), width: COL - 6 }} />
+        </>
+      )}
+      {g.stub !== null && <i className="tl tl-up" style={{ left: colX(g.stub) }} />}
+    </>
+  );
+}
+
+function StackTree({ repo, target, onSelect, current, prefix }: Props & { current: Branch | undefined; prefix: string }) {
   const index = useMemo(() => new CommitIndex(repo), [repo]);
+  const inStack = useMemo(() => currentStack(repo), [repo]);
   const [open, setOpen] = useState<Set<string>>(() => new Set(current && current.parent ? [current.name] : []));
   const [anchor, setAnchor] = useState<string | null>(null);
   const dirty = repo.worktree.changed;
   const is = (t: Target) => !!target && sameTarget(t, target);
+
+  const items = useMemo(() => {
+    const out: TreeItem[] = [];
+    for (const { branch, depth: raw } of treeRows(repo)) {
+      const depth = Math.min(raw, 8);
+      out.push({ kind: "branch", branch, depth });
+      if (branch.current && dirty > 0) out.push({ kind: "working", depth });
+      if (open.has(branch.name)) for (const commit of branch.commits) out.push({ kind: "commit", commit, depth });
+    }
+    return out;
+  }, [repo, open, dirty]);
+  const guides = useMemo(() => treeGuides(items), [items]);
+  const ownerOf = (i: number) => {
+    for (let k = i; k >= 0; k--) {
+      const it = items[k]!;
+      if (it.kind === "branch") return it.branch;
+    }
+    return null;
+  };
 
   const pickCommit = (e: { shiftKey: boolean }, c: Commit) => {
     if (e.shiftKey && anchor) {
@@ -91,8 +137,15 @@ function StackTree({ repo, target, onSelect, current }: Props & { current: Branc
     onSelect({ kind: "commits", from: c.oid, to: c.oid });
   };
   const inRange = (c: Commit) => target?.kind === "commits" && index.contains(target, c.oid);
-  const workingRow = (depth: number) => (
-    <Row active={is({ kind: "working" })} depth={depth} className="sub" onClick={() => onSelect({ kind: "working" })}>
+  const toggle = (name: string) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+  const workingRow = (key: string, indent: number, g?: Guides) => (
+    <Row key={key} active={is({ kind: "working" })} indent={indent} guides={g} className="sub" onClick={() => onSelect({ kind: "working" })}>
       <span className="mark-working" />
       <span>uncommitted</span>
       <span className="dim">
@@ -107,61 +160,65 @@ function StackTree({ repo, target, onSelect, current }: Props & { current: Branc
       <Row active={is({ kind: "stack" })} onClick={() => onSelect({ kind: "stack" })}>
         <span className="glyph">≡</span>
         <span>entire stack</span>
-        <span className="dim">· {repo.branches.filter((b) => b.parent).length} branches</span>
+        <span className="dim">
+          · {inStack.size} branch{inStack.size === 1 ? "" : "es"}
+        </span>
       </Row>
-      {!current && dirty > 0 && workingRow(0)}
-      {rows.map(({ branch: b, depth }) => {
+      {!current && dirty > 0 && workingRow("working", INDENT)}
+      {items.map((it, i) => {
+        const g = guides[i];
+        const subIndent = INDENT + it.depth * COL + 18;
+        if (it.kind === "working") return workingRow("working", subIndent, g);
+        if (it.kind === "commit") {
+          const c = it.commit;
+          const owner = ownerOf(i);
+          return (
+            <Row
+              key={c.oid}
+              active={inRange(c)}
+              indent={subIndent}
+              guides={g}
+              className={`sub commit${owner?.parent && !inStack.has(owner.name) ? " off" : ""}`}
+              title={`${c.short} ${c.subject}\n${c.author} · ${new Date(c.date).toLocaleString()}\nshift-click to select a range`}
+              onClick={(e) => pickCommit(e, c)}
+            >
+              <span className="sha">{c.short}</span>
+              <span className="subject">{c.subject}</span>
+            </Row>
+          );
+        }
+        const b = it.branch;
         const trunk = !b.parent;
         const expanded = open.has(b.name);
         const t: Target = { kind: "branch", branch: b.name, working: b.current && dirty > 0 };
         return (
-          <div key={b.name}>
-            <Row
-              active={target?.kind === "branch" && target.branch === b.name}
-              depth={depth}
-              className="branch"
-              title={b.behind ? `${b.name} needs a restack onto ${b.parent}` : b.name}
-              onClick={() => onSelect(t)}
+          <Row
+            key={b.name}
+            active={target?.kind === "branch" && target.branch === b.name}
+            indent={INDENT + it.depth * COL}
+            guides={g}
+            className={`branch${!trunk && !inStack.has(b.name) ? " off" : ""}`}
+            title={[b.name, b.pr && `#${b.pr.number}`, b.behind && `needs a restack onto ${b.parent}`].filter(Boolean).join("\n")}
+            onClick={() => onSelect(t)}
+          >
+            <span className={`glyph${b.current ? " current" : ""}`}>{b.current ? "■" : "□"}</span>
+            <span className={`bname${b.current ? " current" : ""}`}>{stripPrefix(b.name, prefix)}</span>
+            {b.pr && <span className="dim pr">#{b.pr.number}</span>}
+            {b.behind && <span className="behind">restack</span>}
+            <span className="grow" />
+            {!trunk && <span className="dim num">{b.commits.length}</span>}
+            <button
+              className="chev"
+              aria-label={expanded ? "Hide commits" : "Show commits"}
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(b.name);
+              }}
             >
-              <button
-                className="chev"
-                aria-label={expanded ? "Hide commits" : "Show commits"}
-                aria-expanded={expanded}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpen((s) => {
-                    const n = new Set(s);
-                    if (n.has(b.name)) n.delete(b.name);
-                    else n.add(b.name);
-                    return n;
-                  });
-                }}
-              >
-                <Chevron open={expanded} />
-              </button>
-              <span className={`glyph${b.current ? " current" : ""}`}>{b.current ? "■" : "□"}</span>
-              <span className={`bname${b.current ? " current" : ""}`}>{b.name}</span>
-              {b.pr && <span className="dim">#{b.pr.number}</span>}
-              {b.behind && <span className="behind">restack</span>}
-              <span className="grow" />
-              {!trunk && <span className="dim num">{b.commits.length}</span>}
-            </Row>
-            {b.current && dirty > 0 && workingRow(depth + 1)}
-            {expanded &&
-              b.commits.map((c) => (
-                <Row
-                  key={c.oid}
-                  active={inRange(c)}
-                  depth={depth + 1}
-                  className="sub commit"
-                  title={`${c.short} ${c.subject}\n${c.author} · ${new Date(c.date).toLocaleString()}\nshift-click to select a range`}
-                  onClick={(e) => pickCommit(e, c)}
-                >
-                  <span className="sha">{c.short}</span>
-                  <span className="subject">{c.subject}</span>
-                </Row>
-              ))}
-          </div>
+              <Chevron open={expanded} />
+            </button>
+          </Row>
         );
       })}
     </div>
@@ -227,8 +284,8 @@ function Agent({ repo, target, onSelect }: { repo: RepoState; target: Target | n
   );
 }
 
-const Files = forwardRef<HTMLInputElement, Props>(function Files(
-  { entries, sections, activeKey, isViewed, commentCount, onFile, onToggleViewed },
+const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function Files(
+  { entries, sections, activeKey, isViewed, commentCount, onFile, onToggleViewed, prefix },
   ref,
 ) {
   const [q, setQ] = useState("");
@@ -269,7 +326,11 @@ const Files = forwardRef<HTMLInputElement, Props>(function Files(
           const viewed = isViewed(e);
           return (
             <div key={e.key}>
-              {head && <div className="file-group">{head}</div>}
+              {head && (
+                <div className="file-group" title={head}>
+                  {stripPrefix(head, prefix)}
+                </div>
+              )}
               <div
                 className={`row file${e.key === activeKey ? " active" : ""}${viewed ? " is-viewed" : ""}`}
                 role="button"

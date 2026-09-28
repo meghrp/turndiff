@@ -108,6 +108,7 @@ select {
   position: relative;
 }
 .rail {
+  container-type: inline-size;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -319,6 +320,11 @@ select {
   color: var(--fg);
   font-weight: 600;
 }
+.head-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .waiting,
 .running {
   flex: none;
@@ -382,6 +388,44 @@ select {
   overflow: hidden;
   color: var(--fg-mid);
   user-select: none;
+}
+.row {
+  position: relative;
+}
+.tl {
+  position: absolute;
+  width: 1px;
+  background: #5a637880; /* tree.indentGuidesStroke, softened */
+  pointer-events: none;
+}
+.tl-v {
+  top: 0;
+  bottom: 0;
+}
+.tl-down {
+  top: 50%;
+  bottom: 0;
+}
+.tl-up {
+  top: 0;
+  height: calc(50% - 6px);
+}
+.tl-h {
+  top: 50%;
+  height: 1px;
+}
+@container (max-width: 380px) {
+  .row.branch .pr {
+    display: none;
+  }
+}
+.row.off {
+  color: var(--fg-dim);
+}
+.row.off .glyph,
+.row.off .behind,
+.row.off .dim {
+  opacity: 0.6;
 }
 .row:hover {
   background: var(--hover);
