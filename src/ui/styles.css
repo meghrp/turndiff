@@ -102,7 +102,6 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
-/* Layout */
 .app {
   display: flex;
   height: 100vh;
@@ -140,7 +139,6 @@ select {
   position: relative;
 }
 
-/* Controls */
 .btn,
 .toggle,
 .seg button,
@@ -303,7 +301,6 @@ select {
   font-size: 11px;
 }
 
-/* Rail */
 .rail-head,
 .toolbar {
   flex: none;
@@ -525,7 +522,6 @@ select {
   color: var(--fg-dim);
 }
 
-/* Toolbar */
 .toolbar {
   padding: 0 10px 0 8px;
   background: var(--bg);
@@ -586,7 +582,6 @@ select {
   opacity: 0.6;
 }
 
-/* Diff pane */
 .scroller {
   flex: 1 1 auto;
   overflow: auto;

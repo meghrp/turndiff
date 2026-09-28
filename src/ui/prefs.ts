@@ -23,7 +23,6 @@ export function usePref<T>(key: string, initial: T): [T, (v: T | ((old: T) => T)
   return [value, set];
 }
 
-/** Unsaved composer text, so nothing typed is lost to a closed composer or a reload. */
 export const drafts = {
   get: (key: string) => localStorage.getItem(`${PREFIX}draft:${key}`),
   set: (key: string, body: string) =>

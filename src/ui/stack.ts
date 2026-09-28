@@ -15,7 +15,6 @@ export interface TreeRow {
   depth: number;
 }
 
-/** git-spice `ls` orientation: children above parents, trunk last. */
 export function treeRows(s: RepoState): TreeRow[] {
   const depth = new Map<string, number>();
   for (const b of s.branches) depth.set(b.name, b.parent ? (depth.get(b.parent) ?? 0) + 1 : 0);
@@ -43,7 +42,6 @@ export class CommitIndex {
     return undefined;
   }
 
-  /** True when `a` is `b` or one of its ancestors in the stack. */
   private ancestorOrSelf(a: string, b: string): boolean {
     for (let cur: string | null = b; cur; cur = this.branches.get(cur)?.parent ?? null) if (cur === a) return true;
     return false;

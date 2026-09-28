@@ -13,7 +13,6 @@ const POLL_MS = 4000;
 const NARROW = 900;
 const LOADED_AT = Date.now();
 
-// RepoState.focus is landing in model.ts on rebuild/engine; typed here until the rebase.
 type Focus = { hash: string; at: number } | null;
 type Repo = RepoState & { focus?: Focus };
 

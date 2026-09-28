@@ -1,8 +1,6 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
 import type { Anchor, Comment, FileChange, Oid, Side } from "../model.ts";
 
-// Comments key on (side, path, blob): a comment shows wherever that exact
-// content is diffed on that side, whichever view it was written in.
 const sideKey = (side: Side, path: string, blob: Oid) => `${side}\0${path}\0${blob}`;
 
 export function indexComments(comments: Comment[]): Map<string, Comment[]> {
@@ -26,7 +24,6 @@ export const anchorKey = (a: Anchor) => `${a.side}:${a.path}:${a.blob}:${a.start
 export const toSide = (s: "additions" | "deletions" | undefined): Side => (s === "deletions" ? "old" : "new");
 export const toPierreSide = (s: Side) => (s === "old" ? ("deletions" as const) : ("additions" as const));
 
-/** Line number -> text for one side of a parsed (possibly partial) diff. */
 function sideLines(fd: FileDiffMetadata, side: Side): Map<number, string> {
   const src = side === "new" ? fd.additionLines : fd.deletionLines;
   const out = new Map<number, string>();
