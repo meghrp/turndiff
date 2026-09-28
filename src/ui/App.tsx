@@ -56,7 +56,14 @@ export function App() {
     }
   }, []);
 
-  const refreshReview = useCallback(() => api.review().then(setReview).catch(() => {}), []);
+  const refreshReview = useCallback(
+    () =>
+      api
+        .review()
+        .then(setReview)
+        .catch(() => {}),
+    [],
+  );
 
   useEffect(() => {
     void refreshState();
@@ -66,10 +73,11 @@ export function App() {
       void refreshState();
       void refreshReview();
     };
-    const onHash = () => setTarget((cur) => {
-      const next = hashToTarget(location.hash);
-      return cur && next && sameTarget(cur, next) ? cur : next;
-    });
+    const onHash = () =>
+      setTarget((cur) => {
+        const next = hashToTarget(location.hash);
+        return cur && next && sameTarget(cur, next) ? cur : next;
+      });
     const onResize = () => innerWidth < NARROW && setRailOpen(false);
     addEventListener("focus", onFocus);
     addEventListener("hashchange", onHash);
@@ -139,16 +147,19 @@ export function App() {
 
   const reviewRef = useRef(review);
   reviewRef.current = review;
-  const toggleViewed = useCallback(async (e: FileEntry) => {
-    const key = fileViewedKey(e);
-    const now = !reviewRef.current.viewed.includes(key);
-    setReview((r) => ({ ...r, viewed: now ? [...r.viewed, key] : r.viewed.filter((k) => k !== key) }));
-    try {
-      setReview(await api.setViewed(key, now));
-    } catch {
-      void refreshReview();
-    }
-  }, [refreshReview]);
+  const toggleViewed = useCallback(
+    async (e: FileEntry) => {
+      const key = fileViewedKey(e);
+      const now = !reviewRef.current.viewed.includes(key);
+      setReview((r) => ({ ...r, viewed: now ? [...r.viewed, key] : r.viewed.filter((k) => k !== key) }));
+      try {
+        setReview(await api.setViewed(key, now));
+      } catch {
+        void refreshReview();
+      }
+    },
+    [refreshReview],
+  );
 
   const targetRef = useRef(target);
   targetRef.current = target;
@@ -250,16 +261,19 @@ export function App() {
   }
 
   const stale = !!view && repo.version !== view.version;
-  // Commit views name the branch each commit belongs to.
-  const onBranches =
-    view?.target.kind === "commits" ? [...new Set(view.sections.map((s) => s.branch ?? repo.trunk))].join(", ") : null;
+  const onBranches = view?.target.kind === "commits" ? [...new Set(view.sections.map((s) => s.branch ?? repo.trunk))].join(", ") : null;
   const commits = new Set(view?.sections.flatMap((s) => s.commits.map((c) => c.oid)) ?? []).size;
   const working = !!view?.sections.some((s) => s.includesWorking);
   const add = entries.reduce((n, e) => n + e.file.additions, 0);
   const del = entries.reduce((n, e) => n + e.file.deletions, 0);
   const toolbar = (
     <div className="toolbar">
-      <button className={`btn icon rail-toggle${railOpen ? " on" : ""}`} onClick={() => setRailOpen((o) => !o)} aria-label="Toggle sidebar (b)" title="Sidebar  b">
+      <button
+        className={`btn icon rail-toggle${railOpen ? " on" : ""}`}
+        onClick={() => setRailOpen((o) => !o)}
+        aria-label="Toggle sidebar (b)"
+        title="Sidebar  b"
+      >
         <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
           <rect x="1.5" y="2.5" width="11" height="9" rx="1.5" fill="none" stroke="currentColor" />
           <path d="M5 2.5v9" stroke="currentColor" />
@@ -289,9 +303,17 @@ export function App() {
           new changes · r
         </button>
       )}
-      {repoError && <span className="offline" title={repoError}>offline</span>}
+      {repoError && (
+        <span className="offline" title={repoError}>
+          offline
+        </span>
+      )}
       <div className="seg" role="group" aria-label="Diff layout">
-        <button className={diffStyle === "unified" ? "on" : ""} aria-pressed={diffStyle === "unified"} onClick={() => setDiffStyle("unified")}>
+        <button
+          className={diffStyle === "unified" ? "on" : ""}
+          aria-pressed={diffStyle === "unified"}
+          onClick={() => setDiffStyle("unified")}
+        >
           unified
         </button>
         <button className={diffStyle === "split" ? "on" : ""} aria-pressed={diffStyle === "split"} onClick={() => setDiffStyle("split")}>
@@ -304,7 +326,11 @@ export function App() {
       <button className={`toggle${ws ? " on" : ""}`} aria-pressed={ws} onClick={() => setWs((w) => !w)} title="Ignore whitespace changes">
         ws
       </button>
-      <button className={`btn review-btn${panel === "review" ? " on" : ""}`} onClick={() => setPanel((p) => (p === "review" ? null : "review"))} title="Review  c">
+      <button
+        className={`btn review-btn${panel === "review" ? " on" : ""}`}
+        onClick={() => setPanel((p) => (p === "review" ? null : "review"))}
+        title="Review  c"
+      >
         Review
         {review.comments.length > 0 && <span className="badge">{review.comments.length}</span>}
       </button>

@@ -58,6 +58,8 @@ export const DiffPane = forwardRef<
   const perEntry = useStableComments(entries, index);
   const isCollapsed = (e: FileEntry) => collapseOverride.get(e.key) ?? viewed.has(fileViewedKey(e));
 
+  const viewedNow = useRef(viewed);
+  viewedNow.current = viewed;
   const outer = useRef(actions);
   outer.current = actions;
   const composerRef = useRef(composer);
@@ -89,8 +91,6 @@ export const DiffPane = forwardRef<
     }),
     [],
   );
-  const viewedNow = useRef(viewed);
-  viewedNow.current = viewed;
 
   const cardRef = useCallback((key: string, el: HTMLElement | null) => {
     if (el) cards.current.set(key, el);
@@ -104,7 +104,6 @@ export const DiffPane = forwardRef<
     s.scrollTo({ top: Math.max(0, top) });
   };
 
-  // Tracks the file whose card crosses the top edge, for j/k/v and the rail highlight.
   const activeRef = useRef<string | null>(null);
   const track = useCallback(() => {
     const s = scroller.current;
@@ -188,22 +187,20 @@ export const DiffPane = forwardRef<
         <div className="section" key={s.id}>
           {multi && <SectionHead section={s} />}
           {multi && s.files.length === 0 && <div className="card-note section-empty">No changes in this branch.</div>}
-          {(bySection.get(s.id) ?? []).map((e) => {
-            return (
-              <FileCard
-                key={e.key}
-                entry={e}
-                comments={perEntry.get(e.key) ?? NONE}
-                viewed={viewed.has(fileViewedKey(e))}
-                collapsed={isCollapsed(e)}
-                composer={composer?.entryKey === e.key ? composer : null}
-                prefs={prefs}
-                stickyTop={stickyTop}
-                actions={cardActions}
-                cardRef={cardRef}
-              />
-            );
-          })}
+          {(bySection.get(s.id) ?? []).map((e) => (
+            <FileCard
+              key={e.key}
+              entry={e}
+              comments={perEntry.get(e.key) ?? NONE}
+              viewed={viewed.has(fileViewedKey(e))}
+              collapsed={isCollapsed(e)}
+              composer={composer?.entryKey === e.key ? composer : null}
+              prefs={prefs}
+              stickyTop={stickyTop}
+              actions={cardActions}
+              cardRef={cardRef}
+            />
+          ))}
         </div>
       ),
     );
@@ -213,11 +210,7 @@ export const DiffPane = forwardRef<
   return (
     <main className={`pane${busy ? " busy" : ""}`}>
       {toolbar}
-      <Virtualizer
-        className="scroller"
-        contentClassName="scroll-content"
-        style={{ ["--section-head" as string]: `${SECTION_HEAD}px` }}
-      >
+      <Virtualizer className="scroller" contentClassName="scroll-content" style={{ ["--section-head" as string]: `${SECTION_HEAD}px` }}>
         <ScrollerRef target={scroller} />
         {(view.notes.length > 0 || singleReplay) && (
           <div className="notes">
@@ -292,7 +285,10 @@ function SectionHead({ section: s }: { section: Section }) {
 }
 
 const Replay = ({ replay }: { replay: { conflicts: boolean } }) => (
-  <span className={`replay${replay.conflicts ? " conflict" : ""}`} title="The old side was replayed onto the moved parent to hide restack noise.">
+  <span
+    className={`replay${replay.conflicts ? " conflict" : ""}`}
+    title="The old side was replayed onto the moved parent to hide restack noise."
+  >
     {replay.conflicts ? "replayed with conflicts" : "replayed onto parent"}
   </span>
 );

@@ -56,13 +56,15 @@ export class CommitIndex {
   }
 
   private cmp(a: Oid, b: Oid): number {
-    const x = this.order(a)!, y = this.order(b)!;
+    const x = this.order(a)!;
+    const y = this.order(b)!;
     return x[0] - y[0] || x[1] - y[1];
   }
 
   /** from..to (oldest first) when both commits sit on one ancestry chain, else null. */
   range(a: Oid, b: Oid): Target | null {
-    const A = this.find(a), B = this.find(b);
+    const A = this.find(a);
+    const B = this.find(b);
     if (!A || !B) return null;
     const chained = this.ancestorOrSelf(A.branch.name, B.branch.name) || this.ancestorOrSelf(B.branch.name, A.branch.name);
     if (!chained) return null;
@@ -71,7 +73,9 @@ export class CommitIndex {
   }
 
   contains(t: Extract<Target, { kind: "commits" }>, oid: Oid): boolean {
-    const c = this.find(oid), from = this.find(t.from), to = this.find(t.to);
+    const c = this.find(oid);
+    const from = this.find(t.from);
+    const to = this.find(t.to);
     if (!c || !from || !to) return false;
     if (!this.ancestorOrSelf(c.branch.name, to.branch.name) || !this.ancestorOrSelf(from.branch.name, c.branch.name)) return false;
     return this.cmp(from.commit.oid, c.commit.oid) <= 0 && this.cmp(c.commit.oid, to.commit.oid) <= 0;

@@ -79,7 +79,7 @@ export const FileCard = memo(function FileCard({
   cardRef: (key: string, el: HTMLElement | null) => void;
 }) {
   const { file } = entry;
-  const near = useNearViewport(entry.key);
+  const near = useNearViewport();
   const fd = useMemo(() => (near.seen ? parse(file) : null), [near.seen, file]);
   const [dir, name] = splitPath(file.path);
   const [large, setLarge] = useState(file.additions + file.deletions > LARGE_DIFF_LINES);
@@ -121,10 +121,7 @@ export const FileCard = memo(function FileCard({
         if (r) openRef.current(r);
       },
       async loadDiffFiles() {
-        const [oldC, newC] = await Promise.all([
-          file.oldBlob ? api.blob(file.oldBlob) : "",
-          file.newBlob ? api.blob(file.newBlob) : "",
-        ]);
+        const [oldC, newC] = await Promise.all([file.oldBlob ? api.blob(file.oldBlob) : "", file.newBlob ? api.blob(file.newBlob) : ""]);
         return {
           oldFile: { name: file.oldPath ?? file.path, contents: oldC, cacheKey: file.oldBlob ?? undefined },
           newFile: { name: file.path, contents: newC, cacheKey: file.newBlob ?? undefined },
@@ -149,10 +146,7 @@ export const FileCard = memo(function FileCard({
   }, [fd, comments, composer]);
 
   const selected: SelectedLineRange | null =
-    drag ??
-    (composer
-      ? { start: composer.anchor.start, end: composer.anchor.end, side: toPierreSide(composer.anchor.side) }
-      : null);
+    drag ?? (composer ? { start: composer.anchor.start, end: composer.anchor.end, side: toPierreSide(composer.anchor.side) } : null);
 
   const renderAnnotation = (a: DiffLineAnnotation<Meta>) => {
     const m = a.metadata;
@@ -243,7 +237,7 @@ export const FileCard = memo(function FileCard({
  * to seconds on views with hundreds of files. Cards mount their diff once they
  * come within a screen or two of the viewport, and stay mounted.
  */
-function useNearViewport(key: string) {
+function useNearViewport() {
   const [seen, setSeen] = useState(false);
   const observer = useRef<IntersectionObserver | null>(null);
   const ref = useCallback(
@@ -262,7 +256,7 @@ function useNearViewport(key: string) {
       );
       observer.current.observe(el);
     },
-    [seen, key],
+    [seen],
   );
   useEffect(() => () => observer.current?.disconnect(), []);
   return { seen, ref };

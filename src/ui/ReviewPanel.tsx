@@ -50,7 +50,7 @@ export function ReviewPanel({
       await flush();
       const res = await api.submit(d, summary);
       if (res.delivered) setStatus({ kind: "ok", text: "Sent to the agent." });
-      else if (await copyText(res.markdown)) setStatus({ kind: "ok", text: "No agent was waiting. The feedback is on your clipboard." });
+      else if (await copyText(res.markdown)) setStatus({ kind: "ok", text: "No agent waiting. Copied; the next turndiff review also gets it." });
       else setStatus({ kind: "err", text: "No agent was waiting and the clipboard is unavailable. Use Copy." });
       onReview(await api.review());
     } catch (e) {
@@ -131,7 +131,12 @@ export function ReviewPanel({
         {status && <div className={`status-line ${status.kind}`}>{status.text}</div>}
         <div className="decisions">
           {DECISIONS.map(({ d, label }) => (
-            <button key={d} className={`btn${d === (review.comments.length ? "request_changes" : "approve") ? " primary" : ""}`} disabled={busy} onClick={() => void submit(d)}>
+            <button
+              key={d}
+              className={`btn${d === (review.comments.length ? "request_changes" : "approve") ? " primary" : ""}`}
+              disabled={busy}
+              onClick={() => void submit(d)}
+            >
               {label}
             </button>
           ))}

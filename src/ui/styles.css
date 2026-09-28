@@ -420,9 +420,6 @@ select {
 .glyph.current {
   color: var(--accent);
 }
-.row.sub {
-  padding-left: 30px;
-}
 .row.commit .sha {
   flex: none;
   color: var(--fg-dim);

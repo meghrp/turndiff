@@ -41,8 +41,7 @@ export const api = {
   setViewed: (key: string, viewed: boolean) => call<ReviewState>("/api/viewed", { method: "PUT", json: { key, viewed } }),
   setSummary: (summary: string) => call<ReviewState>("/api/summary", { method: "PUT", json: { summary } }),
   feedback: (decision: Decision) => call<{ markdown: string }>(`/api/feedback?decision=${decision}`),
-  submit: (decision: Decision, summary: string) =>
-    call<SubmitResponse>("/api/submit", { method: "POST", json: { decision, summary } }),
+  submit: (decision: Decision, summary: string) => call<SubmitResponse>("/api/submit", { method: "POST", json: { decision, summary } }),
 };
 
 export async function copyText(text: string): Promise<boolean> {

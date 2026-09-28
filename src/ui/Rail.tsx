@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Branch, Commit, RepoState, SessionSummary, Target } from "../model.ts";
 import { CommitIndex, sameTarget, treeRows } from "./stack.ts";
 import { splitPath } from "./lines.ts";
@@ -48,7 +48,7 @@ function Row({
 }: {
   active: boolean;
   depth?: number;
-  onClick(e: MouseEvent): void;
+  onClick(e: { shiftKey: boolean }): void;
   children: ReactNode;
   className?: string;
   title?: string;
@@ -65,7 +65,7 @@ function Row({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onClick(e as unknown as MouseEvent);
+          onClick(e);
         }
       }}
     >
@@ -82,7 +82,7 @@ function StackTree({ repo, target, onSelect, current }: Props & { current: Branc
   const dirty = repo.worktree.changed;
   const is = (t: Target) => !!target && sameTarget(t, target);
 
-  const pickCommit = (e: MouseEvent, c: Commit) => {
+  const pickCommit = (e: { shiftKey: boolean }, c: Commit) => {
     if (e.shiftKey && anchor) {
       const r = index.range(anchor, c.oid);
       if (r) return onSelect(r);
@@ -176,7 +176,7 @@ function Agent({ repo, target, onSelect }: { repo: RepoState; target: Target | n
     if (target?.kind === "turns" && target.session !== sessionId) setSessionId(target.session);
   }, [target]);
   const turns = session ? [...session.turns].reverse() : [];
-  const pick = (e: MouseEvent, n: number) => {
+  const pick = (e: { shiftKey: boolean }, n: number) => {
     if (!session) return;
     if (e.shiftKey && anchor !== null) {
       return onSelect({ kind: "turns", session: session.id, from: Math.min(anchor, n), to: Math.max(anchor, n) });
@@ -184,8 +184,7 @@ function Agent({ repo, target, onSelect }: { repo: RepoState; target: Target | n
     setAnchor(n);
     onSelect({ kind: "turns", session: session.id, from: n, to: n });
   };
-  const inRange = (n: number) =>
-    target?.kind === "turns" && target.session === session?.id && n >= target.from && n <= target.to;
+  const inRange = (n: number) => target?.kind === "turns" && target.session === session?.id && n >= target.from && n <= target.to;
   return (
     <div className="group">
       <div className="group-title">
@@ -201,14 +200,24 @@ function Agent({ repo, target, onSelect }: { repo: RepoState; target: Target | n
         )}
       </div>
       {repo.lastReviewAt && (
-        <Row active={target?.kind === "since-review"} onClick={() => onSelect({ kind: "since-review" })} title={`Last review ${new Date(repo.lastReviewAt).toLocaleString()}`}>
+        <Row
+          active={target?.kind === "since-review"}
+          onClick={() => onSelect({ kind: "since-review" })}
+          title={`Last review ${new Date(repo.lastReviewAt).toLocaleString()}`}
+        >
           <span className="glyph">◷</span>
           <span>since last review</span>
           <span className="dim">· {ago(repo.lastReviewAt)}</span>
         </Row>
       )}
       {turns.map((t) => (
-        <Row key={t.n} active={inRange(t.n)} onClick={(e) => pick(e, t.n)} className="turn" title={`${t.prompt ?? "(no prompt)"}\nshift-click to select a range`}>
+        <Row
+          key={t.n}
+          active={inRange(t.n)}
+          onClick={(e) => pick(e, t.n)}
+          className="turn"
+          title={`${t.prompt ?? "(no prompt)"}\nshift-click to select a range`}
+        >
           <span className="num turn-n">{t.n}</span>
           <span className="subject">{t.prompt ?? <i className="dim">no prompt</i>}</span>
           {!t.endedAt && <span className="running" title="Still running" />}
@@ -254,7 +263,7 @@ const Files = forwardRef<HTMLInputElement, Props>(function Files(
       <div className="file-list">
         {shown.map((e) => {
           const [dir, name] = splitPath(e.file.path);
-          const head = sections > 1 && e.section.id !== lastSection ? e.section.branch ?? e.section.title : null;
+          const head = sections > 1 && e.section.id !== lastSection ? (e.section.branch ?? e.section.title) : null;
           lastSection = e.section.id;
           const n = commentCount(e);
           const viewed = isViewed(e);

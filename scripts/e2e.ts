@@ -33,7 +33,10 @@ try {
 
   await page.goto(server.url);
   await page.locator(".card").first().waitFor();
-  assert((await page.evaluate(() => location.hash)) === "#branch/feat-b+working", "defaults to the current branch with uncommitted changes");
+  assert(
+    (await page.evaluate(() => location.hash)) === "#branch/feat-b+working",
+    "defaults to the current branch with uncommitted changes",
+  );
 
   await selectBranch(page, "feat-a");
   assert((await title()).startsWith("feat-a"), "branch view of feat-a");
@@ -48,7 +51,10 @@ try {
   await page.locator(".row.commit", { hasText: "feat-a: add a3" }).click();
   await waitTitle(page, "feat-a: add a3");
   const commitTitle = await title();
-  assert(commitTitle.includes("feat-a: add a3") && commitTitle.includes("on feat-a"), `single-commit view says it is on feat-a (${commitTitle})`);
+  assert(
+    commitTitle.includes("feat-a: add a3") && commitTitle.includes("on feat-a"),
+    `single-commit view says it is on feat-a (${commitTitle})`,
+  );
   await shot("commit");
 
   await page.locator(".row.turn", { hasText: "add g to feat-b" }).click();
@@ -92,7 +98,11 @@ try {
   await page.locator(".card", { hasText: "return 10" }).waitFor();
   assert(true, "r reloads the view with the change");
 
-  await fetch(`${server.url}/api/focus`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hash: "stack" }) });
+  await fetch(`${server.url}/api/focus`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hash: "stack" }),
+  });
   await page.waitForFunction(() => location.hash === "#stack", undefined, { timeout: 15_000 });
   assert(true, "a CLI focus request navigates the open tab");
   await page.goBack();
@@ -103,7 +113,10 @@ try {
   const drawer = page.locator(".drawer");
   await drawer.waitFor();
   const groupOf = (body: string) =>
-    drawer.locator(".rgroup", { has: page.locator(".rbody", { hasText: body }) }).locator(".rgroup-title").innerText();
+    drawer
+      .locator(".rgroup", { has: page.locator(".rbody", { hasText: body }) })
+      .locator(".rgroup-title")
+      .innerText();
   assert((await groupOf("feat-a: name this list")) === "feat-a", "after reload, the feat-a comment is listed under feat-a");
   assert((await groupOf("feat-b: g needs a docstring")) === "feat-b", "after reload, the feat-b comment is listed under feat-b");
   await shot("review-panel");
@@ -116,7 +129,7 @@ try {
   const box = (await target.boundingBox())!;
   assert(box.y > 38 && box.y + box.height < 900, "clicking a comment in the panel opens its view and scrolls it into sight");
 
-  const waiting = fetch(`${server.url}/api/wait?since=${Date.now()}`).then((r) => r.json() as Promise<WaitResponse>);
+  const waiting = fetch(`${server.url}/api/wait`).then((r) => r.json() as Promise<WaitResponse>);
   await page.waitForFunction(async () => (await (await fetch("/api/state")).json()).agentWaiting === true);
   await drawer.locator(".summary").fill("Two small things.");
   await drawer.getByRole("button", { name: "Request changes" }).click();
