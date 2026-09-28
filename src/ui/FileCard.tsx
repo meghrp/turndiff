@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsePatchFiles, type FileDiffMetadata, type SelectedLineRange } from "@pierre/diffs";
 import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from "@pierre/diffs/react";
 import type { Anchor, Comment, FileChange, Section } from "../model.ts";
@@ -79,7 +79,8 @@ export const FileCard = memo(function FileCard({
   cardRef: (key: string, el: HTMLElement | null) => void;
 }) {
   const { file } = entry;
-  const fd = useMemo(() => parse(file), [file]);
+  const near = useNearViewport(entry.key);
+  const fd = useMemo(() => (near.seen ? parse(file) : null), [near.seen, file]);
   const [dir, name] = splitPath(file.path);
   const [large, setLarge] = useState(file.additions + file.deletions > LARGE_DIFF_LINES);
   const [drag, setDrag] = useState<SelectedLineRange | null>(null);
@@ -173,6 +174,7 @@ export const FileCard = memo(function FileCard({
   const body = () => {
     if (collapsed) return null;
     if (file.binary) return <div className="card-note">Binary file</div>;
+    if (!near.seen) return <div style={{ height: estimateHeight(file) }} />;
     if (!fd) return <div className="card-note">{file.status === "renamed" ? "Renamed without content changes" : "No content changes"}</div>;
     if (large)
       return (
@@ -195,7 +197,14 @@ export const FileCard = memo(function FileCard({
   };
 
   return (
-    <section className={`card${collapsed ? " collapsed" : ""}`} data-file={entry.key} ref={(el) => cardRef(entry.key, el)}>
+    <section
+      className={`card${collapsed ? " collapsed" : ""}`}
+      data-file={entry.key}
+      ref={(el) => {
+        cardRef(entry.key, el);
+        near.ref(el);
+      }}
+    >
       <header className="card-head" style={{ top: stickyTop }}>
         <button
           className="chev"
@@ -228,6 +237,47 @@ export const FileCard = memo(function FileCard({
     </section>
   );
 });
+
+/**
+ * Mounting a FileDiff costs a few milliseconds even off screen, which adds up
+ * to seconds on views with hundreds of files. Cards mount their diff once they
+ * come within a screen or two of the viewport, and stay mounted.
+ */
+function useNearViewport(key: string) {
+  const [seen, setSeen] = useState(false);
+  const observer = useRef<IntersectionObserver | null>(null);
+  const ref = useCallback(
+    (el: HTMLElement | null) => {
+      observer.current?.disconnect();
+      if (!el || seen) return;
+      const root = el.closest(".scroller");
+      observer.current = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((e) => e.isIntersecting)) {
+            setSeen(true);
+            observer.current?.disconnect();
+          }
+        },
+        { root, rootMargin: "1500px 0px" },
+      );
+      observer.current.observe(el);
+    },
+    [seen, key],
+  );
+  useEffect(() => () => observer.current?.disconnect(), []);
+  return { seen, ref };
+}
+
+const LINE_PX = 19;
+function estimateHeight(f: FileChange): number {
+  let lines = 0;
+  let hunks = 0;
+  for (const l of f.patch.split("\n")) {
+    if (l.startsWith("@@")) hunks++;
+    else if (hunks && (l[0] === " " || l[0] === "+" || l[0] === "-")) lines++;
+  }
+  return lines * LINE_PX + hunks * 32 + 8;
+}
 
 function Composer({ state, actions }: { state: ComposerState; actions: CardActions }) {
   const key = state.editing ? `edit:${state.editing.id}` : anchorKey(state.anchor);
