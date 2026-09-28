@@ -2,7 +2,7 @@
 // summary, and viewed marks. The server process is the only writer, so the
 // in-memory copy is authoritative and each change is persisted atomically.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git, type RepoPaths } from "../git/exec.ts";
@@ -93,6 +93,14 @@ export class ReviewStore {
   }
 }
 
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function reviewFile(paths: RepoPaths): string {
   return join(paths.gitDir, "turndiff", "review.json");
 }
@@ -110,7 +118,7 @@ export async function outdatedComments(paths: RepoPaths, stack: Stack, comments:
     const out = await git(paths.root, ["cat-file", "--batch-check=%(objectname)"], { stdin: live.map((c) => `${tips.get(c.origin.branch!)}:${c.anchor.path}`).join("\n") + "\n" });
     out.split("\n").forEach((line, i) => line === live[i]!.anchor.blob && found.add(live[i]!.id));
   }
-  const onDisk = live.filter((c) => !found.has(c.id) && c.origin.branch === stack.worktree.branch && existsSync(join(paths.root, c.anchor.path)));
+  const onDisk = live.filter((c) => !found.has(c.id) && c.origin.branch === stack.worktree.branch && isFile(join(paths.root, c.anchor.path)));
   if (onDisk.length > 0) {
     const out = await git(paths.root, ["hash-object", "--stdin-paths"], { stdin: onDisk.map((c) => c.anchor.path).join("\n") + "\n" });
     out.split("\n").forEach((oid, i) => oid === onDisk[i]!.anchor.blob && found.add(onDisk[i]!.id));

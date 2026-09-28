@@ -1,6 +1,6 @@
 // A scratch repo with a git-spice stack main <- feat-a <- feat-b <- feat-c and
 // two recorded agent turns. Turn 1 commits on feat-b, switches to feat-a and
-// commits there, pulls a new main, restacks everything, and ends on feat-b
+// commits there, pulls a new main from origin, restacks everything, and ends on feat-b
 // with uncommitted work. Turn 2 creates feat-d on top of feat-c and returns to
 // feat-b. Shared by the tests and `bun scripts/scenario.ts`.
 
@@ -36,6 +36,10 @@ export async function buildScenario(dir?: string): Promise<Scenario> {
   await put("b.txt", "base\n");
   await run("add", "-A");
   await run("commit", "-qm", "c1");
+  // origin never has to exist: only origin/main and main's upstream config matter.
+  await run("remote", "add", "origin", join(root, "no-such-remote"));
+  await run("update-ref", "refs/remotes/origin/main", "main");
+  await run("branch", "--set-upstream-to=origin/main", "main");
   await run("checkout", "-qb", "feat-a");
   await put("feat_a.py", "a1\na2\n");
   await run("add", "-A");
@@ -63,6 +67,7 @@ export async function buildScenario(dir?: string): Promise<Scenario> {
   await put("upstream.txt", "pulled from origin\n");
   await run("add", "a.txt", "upstream.txt");
   await run("commit", "-qm", "main: upstream work");
+  await run("update-ref", "refs/remotes/origin/main", "main");
   for (const [branch, onto] of [["feat-a", "main"], ["feat-b", "feat-a"], ["feat-c", "feat-b"]] as const) {
     await run("checkout", "-q", branch);
     await run("rebase", "-q", onto);

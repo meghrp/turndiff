@@ -18,6 +18,7 @@ const HELP = `turndiff: review stacked branches, commits and agent turns, send c
 Usage:
   turndiff [open] [target]      Open the review UI for this worktree (starts the server if needed).
   turndiff review [target]      Open it, wait for the reviewer to submit, print the feedback markdown.
+                                A bare branch name works as a target: turndiff review feat-a
   turndiff stop                 Stop this worktree's review server.
   turndiff hook                 Claude Code hook entrypoint (hook JSON on stdin).
   turndiff install [--skill-only]  Register the hooks in ~/.claude/settings.json and link the skill.
@@ -39,25 +40,34 @@ Options:
   --port <n>         Port for a newly started server (default: random).
 `;
 
+/** Flags that never take a value, so a bare word after them is a branch name. */
+const SWITCHES = new Set(["open", "no-open", "working", "stack", "since-review", "all", "skill-only", "help"]);
+
 interface Args {
   cmd: string;
   flags: Map<string, string | true>;
+  /** A bare word after the command, read as a branch name. */
+  branch: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
   const first = argv[0] && !argv[0].startsWith("--") ? argv[0] : "open";
   const tail = first === argv[0] ? argv.slice(1) : argv;
   const flags = new Map<string, string | true>();
+  let branch: string | null = null;
   for (let i = 0; i < tail.length; i++) {
     const a = tail[i]!;
-    if (!a.startsWith("--")) continue;
+    if (!a.startsWith("--")) {
+      branch ??= a;
+      continue;
+    }
     const next = tail[i + 1];
-    if (next !== undefined && !next.startsWith("--")) {
+    if (next !== undefined && !next.startsWith("--") && !SWITCHES.has(a.slice(2))) {
       flags.set(a.slice(2), next);
       i++;
     } else flags.set(a.slice(2), true);
   }
-  return { cmd: first, flags };
+  return { cmd: first, flags, branch };
 }
 
 const str = (args: Args, key: string) => {
@@ -74,9 +84,9 @@ async function commitOid(cwd: string, rev: string): Promise<string> {
 async function parseTarget(args: Args, paths: RepoPaths): Promise<Target | null> {
   const cwd = paths.root;
   const f = args.flags;
-  if (f.has("branch")) {
+  if (f.has("branch") || args.branch) {
     const current = await gitOrNull(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]);
-    const name = str(args, "branch") ?? current;
+    const name = str(args, "branch") ?? args.branch ?? current;
     if (!name) throw new Error("detached HEAD: pass --branch <name>");
     return { kind: "branch", branch: name, working: name === current };
   }
@@ -135,14 +145,13 @@ async function cmdOpen(args: Args, paths: RepoPaths): Promise<number> {
 
 async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
   const base = await present(args, paths);
-  const since = Date.now();
   // Stay under Claude Code's 10-minute Bash ceiling so the agent gets a clean "still waiting".
   const timeoutMs = Number(str(args, "timeout") ?? 540) * 1000;
-  const deadline = timeoutMs > 0 ? since + timeoutMs : Number.POSITIVE_INFINITY;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
   while (Date.now() < deadline) {
     let res: Response;
     try {
-      res = await fetch(`${base}/api/wait?since=${since}`);
+      res = await fetch(`${base}/api/wait`);
     } catch {
       process.stderr.write("turndiff: the review server stopped before feedback was submitted\n");
       return 2;

@@ -20,6 +20,8 @@ export interface RunningServer {
 }
 
 const WAIT_MS = 25_000;
+/** How long a submission nobody was waiting for stays available to the next `turndiff review`. */
+const PENDING_MS = 10 * 60_000;
 const IDLE_EXIT_MS = 8 * 3600_000;
 const DECISIONS: readonly Decision[] = ["approve", "request_changes", "comment"];
 
@@ -46,8 +48,11 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
   };
 
   const waiters = new Set<(r: WaitResponse) => void>();
-  let lastSubmission: (WaitResponse & { atMs: number }) | null = null;
+  // A submission no waiter has taken yet. The CLI re-polls every WAIT_MS and the
+  // agent re-runs `turndiff review` after a timeout; either gap must not lose it.
+  let pending: (WaitResponse & { atMs: number }) | null = null;
   let lastWaitAt = 0;
+  const agentAttached = () => waiters.size > 0 || Date.now() - lastWaitAt < 3000;
   let lastUiAt = 0;
   let lastRequestAt = Date.now();
   let focus: RepoState["focus"] = null;
@@ -69,7 +74,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       worktree: stack.worktree,
       sessions,
       lastReviewAt: store.lastReview?.at ?? null,
-      agentWaiting: waiters.size > 0 || Date.now() - lastWaitAt < 3000,
+      agentWaiting: agentAttached(),
       focus,
       version,
     };
@@ -93,16 +98,22 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     const markdown = await feedback(decision);
     const snap = await captureSnapshot(paths, `review-${Date.now()}`);
     await store.submitted({ decision, markdown, snapshot: snap.id });
-    const delivered = waiters.size > 0;
-    lastSubmission = { decision, markdown, submittedAt: new Date().toISOString(), atMs: Date.now() };
-    for (const resolve of waiters) resolve(lastSubmission);
-    waiters.clear();
+    const delivered = agentAttached();
+    const submission = { decision, markdown, submittedAt: new Date().toISOString() };
+    if (waiters.size > 0) {
+      for (const resolve of waiters) resolve(submission);
+      waiters.clear();
+    } else pending = { ...submission, atMs: Date.now() };
     return { markdown, delivered };
   }
 
-  async function wait(since: number): Promise<Response> {
+  async function wait(): Promise<Response> {
     lastWaitAt = Date.now();
-    if (lastSubmission && lastSubmission.atMs > since) return json(lastSubmission);
+    if (pending && Date.now() - pending.atMs < PENDING_MS) {
+      const { atMs: _, ...submission } = pending;
+      pending = null;
+      return json(submission);
+    }
     let resolveWait!: (r: WaitResponse) => void;
     const submitted = new Promise<WaitResponse>((r) => (resolveWait = r));
     waiters.add(resolveWait);
@@ -195,7 +206,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
           return json({ ok: true });
         }),
       },
-      "/api/wait": route(async (req) => wait(Number(new URL(req.url).searchParams.get("since") ?? 0))),
+      "/api/wait": route(async () => wait()),
     },
     async fetch(req) {
       lastRequestAt = Date.now();
@@ -248,6 +259,8 @@ function parseComment(raw: unknown, id: string): Comment {
     typeof c.body === "string" &&
     a &&
     typeof a.path === "string" &&
+    a.path.length > 0 &&
+    !/[\n\0]/.test(a.path) &&
     (a.side === "old" || a.side === "new") &&
     Number.isInteger(a.start) &&
     Number.isInteger(a.end) &&

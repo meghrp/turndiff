@@ -54,8 +54,7 @@ test("state, views and the review round trip over HTTP", async () => {
   expect(afterPut.outdated).toEqual([]);
   expect((await fetch(`${server.url}/api/comments/k2`, { method: "PUT", body: JSON.stringify(comment) })).status).toBe(400);
 
-  const since = Date.now();
-  const waiting = api<WaitResponse>(`/api/wait?since=${since}`);
+  const waiting = api<WaitResponse>("/api/wait");
   await Bun.sleep(100);
   expect((await api<RepoState>("/api/state")).agentWaiting).toBe(true);
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "request_changes", summary: "one nit" }) });
@@ -84,4 +83,17 @@ test("other sites' pages cannot call the API", async () => {
   expect(res.status).toBe(403);
   const own = await fetch(`${server.url}/api/review`, { headers: { origin: server.url } });
   expect(own.status).toBe(200);
+});
+
+test("a review submitted while no agent waits reaches the next turndiff review once", async () => {
+  // Let the previous test's poll age out so no agent counts as attached.
+  await Bun.sleep(3100);
+  expect((await api<RepoState>("/api/state")).agentWaiting).toBe(false);
+  const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "approve", summary: "later" }) });
+  expect(submitted.delivered).toBe(false);
+  const started = Date.now();
+  const received = await api<WaitResponse>("/api/wait");
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(received.markdown).toBe(submitted.markdown);
+  expect(received.decision).toBe("approve");
 });

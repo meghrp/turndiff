@@ -9,6 +9,12 @@ import { git, gitOrNull, type RepoPaths } from "./exec.ts";
 import type { FileChange, FileStatus, Oid } from "../model.ts";
 
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+export const TURNDIFF_IDENT = {
+  GIT_AUTHOR_NAME: "turndiff",
+  GIT_AUTHOR_EMAIL: "turndiff@localhost",
+  GIT_COMMITTER_NAME: "turndiff",
+  GIT_COMMITTER_EMAIL: "turndiff@localhost",
+};
 const ZERO_OID = /^0+$/;
 const RENAMES = ["--find-renames"];
 
@@ -20,11 +26,11 @@ export async function diffTrees(cwd: string, base: Oid, head: Oid, opts: { ignor
     git(cwd, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", "-U3", ...RENAMES, ...ws, base, head]),
   ]);
   const counts = new Map(parseNumstat(numstat).map((n) => [n.path, n]));
-  const chunks = splitPatch(patch);
-  return parseRaw(raw).map((entry, i) => {
+  const chunks = chunksByBlobs(patch);
+  return parseRaw(raw).map((entry) => {
     const count = counts.get(entry.path);
     const binary = count?.binary ?? false;
-    const chunk = chunks.byBlobs.get(`${entry.oldBlob ?? "0"}..${entry.newBlob ?? "0"}`) ?? chunks.ordered[i] ?? "";
+    const chunk = chunks.get(`${entry.oldBlob ?? "0"}..${entry.newBlob ?? "0"}`)?.shift() ?? "";
     return {
       ...entry,
       additions: count?.additions ?? 0,
@@ -88,19 +94,21 @@ export function parseNumstat(raw: string): Numstat[] {
 }
 
 /**
- * Per-file chunks of a full-index patch, keyed by their "index <old>..<new>"
- * blobs. Pure renames have no index line and fall back to position.
+ * Per-file chunks of a full-index patch, queued under their "index <old>..<new>"
+ * blobs in patch order, which is also --raw order. Files without an index line
+ * (pure renames, mode-only changes) and files a whitespace-ignoring diff left
+ * out get no chunk.
  */
-function splitPatch(patch: string): { byBlobs: Map<string, string>; ordered: string[] } {
-  const ordered = patch.length === 0 ? [] : patch.split(/^(?=diff --git )/m).map((c) => (c.endsWith("\n") ? c : c + "\n"));
-  const byBlobs = new Map<string, string>();
-  for (const chunk of ordered) {
-    const m = /^index ([0-9a-f]+)\.\.([0-9a-f]+)/m.exec(chunk);
+function chunksByBlobs(patch: string): Map<string, string[]> {
+  const byBlobs = new Map<string, string[]>();
+  if (patch.length === 0) return byBlobs;
+  for (const raw of patch.split(/^(?=diff --git )/m)) {
+    const m = /^index ([0-9a-f]+)\.\.([0-9a-f]+)/m.exec(raw);
     if (!m) continue;
     const key = `${ZERO_OID.test(m[1]!) ? "0" : m[1]}..${ZERO_OID.test(m[2]!) ? "0" : m[2]}`;
-    byBlobs.set(key, chunk);
+    byBlobs.set(key, [...(byBlobs.get(key) ?? []), raw.endsWith("\n") ? raw : raw + "\n"]);
   }
-  return { byBlobs, ordered };
+  return byBlobs;
 }
 
 /**
@@ -119,14 +127,7 @@ export async function snapshotWorktree(paths: RepoPaths, message = "turndiff wor
     const head = await gitOrNull(paths.root, ["rev-parse", "--verify", "-q", "HEAD"]);
     const args = ["commit-tree", tree, "-m", message];
     if (head) args.push("-p", head);
-    return await git(paths.root, args, {
-      env: {
-        GIT_AUTHOR_NAME: "turndiff",
-        GIT_AUTHOR_EMAIL: "turndiff@localhost",
-        GIT_COMMITTER_NAME: "turndiff",
-        GIT_COMMITTER_EMAIL: "turndiff@localhost",
-      },
-    });
+    return await git(paths.root, args, { env: TURNDIFF_IDENT });
   } finally {
     await rm(tmpIndex, { force: true });
   }

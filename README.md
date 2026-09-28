@@ -50,20 +50,20 @@ Each worktree gets its own review server, started in the background on first use
 
 ## How turn comparison works
 
-At each hook event turndiff records a snapshot: the tip of every stack branch, plus a commit of the worktree (tracked and untracked files, honoring `.gitignore`) parented on `HEAD`. The worktree commit stands in for the checked-out branch, so uncommitted work belongs to the branch it was written on. Snapshots live under `refs/turndiff/v1/` and never touch your branches, index or stash.
+At each hook event turndiff records a snapshot: the tip and parent of every stack branch, the tip of the trunk's upstream (such as `origin/main`), and a commit of the worktree (tracked and untracked files, honoring `.gitignore`) parented on `HEAD`. Snapshots live under `refs/turndiff/v1/` and never touch your branches, index or stash. One ref per snapshot keeps every recorded commit alive after branches are rewritten.
 
-To compare snapshots `A` and `B`, turndiff takes each branch `X` with parent `P`:
+To compare snapshots `A` and `B`, turndiff takes each branch `X`, with parent `P` as recorded in each snapshot (the trunk's parent is its upstream):
 
 ```
-a = X in A, b = X in B              # worktree commit if X was checked out, else the branch tip
+a = X in A, b = X in B              # the worktree commit for the checked-out branch, else the branch tip
 base_a = merge-base(a, P in A)
 base_b = merge-base(b, P in B)
 old = a                             if base_a == base_b
-old = merge-tree --merge-base=base_a base_b a   otherwise (the restack replay)
+old = merge-tree --merge-base=base_a base_b a   otherwise (replays X's old changes onto its new base)
 section X = diff(old, b)            # skipped when empty
 ```
 
-A branch that did not exist in `A` shows its whole diff against its parent. The trunk contributes only uncommitted changes made while it was checked out, since commits on it cannot be told apart from pulled ones.
+Uncommitted work belongs to the worktree, not to a branch. When the checkout moves from `X` to `Y` and the uncommitted changes come along, they count as already present on `Y` and no longer part of `X`, so a plain `git checkout` shows nothing. When they were committed on `X` first, they count as `X`'s. A branch that did not exist in `A` shows its whole diff against its parent. Commits on the trunk count as local work unless its upstream already has them, so a pull never shows up.
 
 ## Where data lives
 

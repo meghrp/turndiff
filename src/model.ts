@@ -185,7 +185,10 @@ export interface SubmitRequest {
 
 export interface SubmitResponse {
   markdown: string;
-  /** False when no agent was waiting; the UI then offers to copy the markdown. */
+  /**
+   * False when no agent was waiting; the UI then copies the markdown. The next
+   * `turndiff review` within 10 minutes still receives it.
+   */
   delivered: boolean;
 }
 
@@ -207,7 +210,8 @@ export interface WaitResponse {
 //   PUT    /api/summary                     body { summary } -> ReviewState
 //   GET    /api/feedback?decision=<d>       { markdown } preview of what submit would send
 //   POST   /api/submit                      body SubmitRequest -> SubmitResponse
-//   GET    /api/wait?since=<epoch ms>       WaitResponse, or 204 after ~25s with no submission (CLI long-poll)
+//   GET    /api/wait                        WaitResponse, or 204 after ~25s (CLI long-poll). Each submission is
+//                                           delivered once; one made while no CLI was polling waits up to 10 min.
 //   POST   /api/focus                       body { hash } (CLI only) -> sets RepoState.focus
 
 export function viewedKey(path: string, blob: Oid): string {

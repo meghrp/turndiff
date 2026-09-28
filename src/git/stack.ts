@@ -19,6 +19,8 @@ export interface Stack {
   worktree: Worktree;
   /** Whether git-spice metadata drives the parents. */
   spice: boolean;
+  /** Tip of the trunk's upstream (e.g. origin/main), when it has one. */
+  upstream: Oid | null;
 }
 
 /** Cheap fingerprint of everything a Stack or View depends on: refs, HEAD, and uncommitted files. */
@@ -67,7 +69,10 @@ export async function loadStack(paths: RepoPaths, changed: string[]): Promise<St
     branchTips(cwd),
   ]);
   const trunk = spice?.trunk ?? (await defaultBranch(cwd, "origin")) ?? current ?? "main";
-  const parents = await parentMap(cwd, spice, current, trunk, tips);
+  const [parents, upstream] = await Promise.all([
+    parentMap(cwd, spice, current, trunk, tips),
+    gitOrNull(cwd, ["rev-parse", "-q", "--verify", `${trunk}@{upstream}`]),
+  ]);
 
   const children = new Map<string, string[]>();
   for (const [name, parent] of parents) children.set(parent, [...(children.get(parent) ?? []), name]);
@@ -94,7 +99,7 @@ export async function loadStack(paths: RepoPaths, changed: string[]): Promise<St
       return { name, parent, tip, base, commits, pr, current: name === current, behind: base !== parentTip };
     }),
   );
-  return { trunk, branches, worktree: { root: cwd, branch: current, head, changed: changed.length }, spice: spice !== null };
+  return { trunk, branches, worktree: { root: cwd, branch: current, head, changed: changed.length }, spice: spice !== null, upstream };
 }
 
 async function branchTips(cwd: string): Promise<Map<string, Oid>> {

@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, repoPaths, type RepoPaths } from "./git/exec.ts";
-import { snapshotWorktree } from "./git/diff.ts";
+import { diffTrees, snapshotWorktree } from "./git/diff.ts";
+import { captureSnapshot, compareSnapshots, loadSnapshot } from "./git/snapshots.ts";
 import { loadStack, repoVersion, type Stack } from "./git/stack.ts";
 import { resolveView } from "./git/views.ts";
 import { buildScenario, SESSION, type Scenario } from "./scenario.ts";
@@ -223,3 +224,124 @@ describe("review", () => {
     expect(md).toContain("git-spice upstack restack");
   });
 });
+
+describe("comparison edge cases", () => {
+  // A plain repo with feat-x and feat-y on main and feat-b on feat-x, all tracked by git-spice.
+  async function repo(): Promise<{ root: string; paths: RepoPaths; run: (...a: string[]) => Promise<string>; put: (p: string, t: string) => Promise<number> }> {
+    const root = await mkdtemp(join(tmpdir(), "turndiff-edge-"));
+    const run = (...args: string[]) => git(root, args);
+    const put = (p: string, t: string) => Bun.write(join(root, p), t);
+    await run("init", "-q", "-b", "main");
+    await run("config", "user.email", "dev@example.invalid");
+    await run("config", "user.name", "Dev");
+    await put("a.txt", "1\n");
+    await run("add", "-A");
+    await run("commit", "-qm", "base");
+    return { root, paths: await repoPaths(root), run, put };
+  }
+  const compare = async (paths: RepoPaths, a: string, b: string) => {
+    const s = await loadStack(paths, []);
+    return compareSnapshots(paths, (await loadSnapshot(paths, a))!, (await loadSnapshot(paths, b))!, s);
+  };
+
+  test("checking out another branch with uncommitted work carried along changes nothing", async () => {
+    const { root, paths, run, put } = await repo();
+    try {
+      await run("branch", "feat-a");
+      await run("checkout", "-qb", "feat-b");
+      await put("a.txt", "1\nwip\n");
+      await put("notes.md", "scratch\n");
+      await captureSnapshot(paths, "before");
+      await run("checkout", "-q", "feat-a");
+      await captureSnapshot(paths, "after");
+      expect((await compare(paths, "before", "after")).sections).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("committing uncommitted work on one branch and switching to a clean one changes nothing", async () => {
+    const { root, paths, run, put } = await repo();
+    try {
+      await run("branch", "feat-a");
+      await run("checkout", "-qb", "feat-b");
+      await put("a.txt", "1\nwip\n");
+      await captureSnapshot(paths, "before");
+      await run("commit", "-qam", "commit the wip");
+      await run("checkout", "-q", "feat-a");
+      await captureSnapshot(paths, "after");
+      expect((await compare(paths, "before", "after")).sections).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("moving a branch onto another parent is not a change to the branch", async () => {
+    const { root, paths, run, put } = await repo();
+    try {
+      await run("checkout", "-qb", "feat-x");
+      await put("fx.py", "x\n");
+      await run("add", "-A");
+      await run("commit", "-qm", "x");
+      await run("checkout", "-qb", "feat-b");
+      await put("fb.py", "b\n");
+      await run("add", "-A");
+      await run("commit", "-qm", "b");
+      await run("checkout", "-qb", "feat-y", "main");
+      await put("fy.py", "y\n");
+      await run("add", "-A");
+      await run("commit", "-qm", "y");
+      await writeSpiceFor(root, [["feat-x", "main"], ["feat-y", "main"], ["feat-b", "feat-x"]]);
+      await captureSnapshot(paths, "before");
+      await run("rebase", "-q", "--onto", "feat-y", "feat-x", "feat-b");
+      await writeSpiceFor(root, [["feat-x", "main"], ["feat-y", "main"], ["feat-b", "feat-y"]]);
+      await captureSnapshot(paths, "after");
+      expect((await compare(paths, "before", "after")).sections).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("commits on a trunk with no upstream are the trunk's own work", async () => {
+    const { root, paths, run, put } = await repo();
+    try {
+      await captureSnapshot(paths, "before");
+      await put("a.txt", "1\n2\n");
+      await run("commit", "-qam", "agent work on main");
+      await captureSnapshot(paths, "after");
+      const { sections } = await compare(paths, "before", "after");
+      expect(sections.map((s) => [s.branch, s.commits.map((c) => c.subject)])).toEqual([["main", ["agent work on main"]]]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ignoring whitespace never gives one file another file's patch", async () => {
+    const { root, paths, run, put } = await repo();
+    try {
+      await put("b.txt", "b\n");
+      await run("add", "-A");
+      await run("commit", "-qm", "b");
+      const before = await git(root, ["rev-parse", "HEAD"]);
+      await put("a.txt", "1   \n");
+      await put("b.txt", "b\nreal change\n");
+      await run("commit", "-qam", "ws and real");
+      const files = await diffTrees(root, before, "HEAD", { ignoreWhitespace: true });
+      expect(files.map((f) => [f.path, f.patch.includes("diff --git a/" + f.path + " ")])).toEqual([
+        ["a.txt", false],
+        ["b.txt", true],
+      ]);
+      expect(files[0]!.patch).toBe("");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+async function writeSpiceFor(root: string, branches: [name: string, base: string][]): Promise<void> {
+  const blob = (data: unknown) => git(root, ["hash-object", "-w", "--stdin"], { stdin: JSON.stringify(data) });
+  const entries = await Promise.all(branches.map(async ([name, base]) => `100644 blob ${await blob({ base: { name: base } })}\t${name}`));
+  const tree = await git(root, ["mktree"], { stdin: entries.join("\n") + "\n" });
+  const rootTree = await git(root, ["mktree"], { stdin: `100644 blob ${await blob({ trunk: "main" })}\trepo\n040000 tree ${tree}\tbranches\n` });
+  await git(root, ["update-ref", "refs/spice/data", await git(root, ["commit-tree", rootTree, "-m", "spice"])]);
+}
