@@ -1,303 +1,225 @@
 #!/usr/bin/env bun
-// turndiff: review agent turns and stacked branches, send comments back.
+// turndiff: review git-spice stacks, commits and agent turns in the browser,
+// and hand the comments back to the agent.
 
 import { readFile, writeFile, mkdir, symlink, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { currentBranch, git, gitOrNull, repoPaths } from "./git/exec.ts";
-import { deleteSession, handleHook, listSessions, loadSession, snapshotWorktree, type Session } from "./git/checkpoints.ts";
-import { readSpice, resolveParent, stackFor, trunkComparisonRef } from "./git/spice.ts";
-import { branchDiff, turnDiff } from "./git/diff.ts";
+import { git, gitOrNull, repoPaths, type RepoPaths } from "./git/exec.ts";
+import { deleteSession, listSessions, recordHook } from "./git/snapshots.ts";
 import { startServer } from "./server/index.ts";
-import { readState, spawnDaemon, stopDaemon, waitForResult, writeResult, writeState, type DaemonResult } from "./server/daemon.ts";
-import { formatFeedback } from "./feedback.ts";
-import type { Scope } from "./shared.ts";
+import { clearState, codeStamp, ensureDaemon, stopDaemon, writeState } from "./server/daemon.ts";
+import { targetToHash, type Target, type WaitResponse } from "./model.ts";
 
-const HELP = `turndiff — review agent turns and git-spice stacks, send feedback back to the agent
+const HELP = `turndiff: review stacked branches, commits and agent turns, send comments back to the agent
 
 Usage:
-  turndiff review [scope] [options]   Open the review UI, wait for the reviewer to submit, print feedback.
-                                      The server runs detached; re-run to keep waiting or reattach.
-  turndiff stop                       Stop a running review server.
-  turndiff diff <scope> [--ws]        Print the unified patch for a scope.
-  turndiff turns [--session <id>]     List captured turns for a session (default: latest).
-  turndiff sessions                   List sessions with checkpoints in this repo.
-  turndiff stack                      Show the git-spice stack for the current branch.
-  turndiff hook                       Claude Code hook entrypoint (reads the hook JSON on stdin).
-  turndiff install [--skill-only]     Register hooks in ~/.claude/settings.json and install the review skill.
-  turndiff clean [--all | --session <id> | --keep <n>]   Remove checkpoint refs and session metadata.
+  turndiff [open] [target]      Open the review UI for this worktree (starts the server if needed).
+  turndiff review [target]      Open it, wait for the reviewer to submit, print the feedback markdown.
+  turndiff stop                 Stop this worktree's review server.
+  turndiff hook                 Claude Code hook entrypoint (hook JSON on stdin).
+  turndiff install [--skill-only]  Register the hooks in ~/.claude/settings.json and link the skill.
+  turndiff clean [--keep <n> | --all]  Drop recorded agent sessions (default keeps the newest 5).
 
-Scope (review/diff):
-  --turn <n>                Diff of turn n (pre → post). Default for review: latest turn.
-  --from <n> --to <m>       Cumulative diff across turns n..m.
-  --session <id>            Session to read turns from (default: most recently updated).
-  --branch [name]           Branch-only diff against its git-spice parent (default: current branch).
-  --worktree                Include uncommitted changes in a branch diff.
+Target (default: the checked-out branch against its parent):
+  --branch [name]    A branch against its parent, like a PR.
+  --commit <rev>     One commit.
+  --range <a>..<b>   Commits after <a> up to <b>.
+  --working          Uncommitted changes.
+  --stack            Every branch of the current stack.
+  --turn [n]         What agent turn n changed (default: the latest). --turns <a>-<b> for several.
+  --session <id>     Session for --turn (default: the latest in this worktree).
+  --since-review     What changed since the last submitted review.
 
-Review options:
-  --port <n>                Fixed port (default: random).
-  --no-open                 Do not open the browser when starting a server.
-  --open                    Open the browser even when reattaching.
-  --restart                 Stop any running review server first.
-  --json                    Print the submission as JSON instead of markdown.
-  --out <file>              Also write the feedback to a file.
-  --timeout <seconds>       Stop waiting after this long (default 540, 0 = forever). Server keeps running.
+Options:
+  --timeout <sec>    review: stop waiting after this long (default 540, 0 = forever). The server keeps running.
+  --open / --no-open Force or suppress opening the browser.
+  --port <n>         Port for a newly started server (default: random).
 `;
 
 interface Args {
   cmd: string;
   flags: Map<string, string | true>;
-  rest: string[];
 }
 
 function parseArgs(argv: string[]): Args {
-  const [cmd = "help", ...tail] = argv;
+  const first = argv[0] && !argv[0].startsWith("--") ? argv[0] : "open";
+  const tail = first === argv[0] ? argv.slice(1) : argv;
   const flags = new Map<string, string | true>();
-  const rest: string[] = [];
   for (let i = 0; i < tail.length; i++) {
     const a = tail[i]!;
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = tail[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        flags.set(key, next);
-        i++;
-      } else flags.set(key, true);
-    } else rest.push(a);
+    if (!a.startsWith("--")) continue;
+    const next = tail[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      flags.set(a.slice(2), next);
+      i++;
+    } else flags.set(a.slice(2), true);
   }
-  return { cmd, flags, rest };
+  return { cmd: first, flags };
 }
 
-function flagStr(flags: Map<string, string | true>, key: string): string | null {
-  const v = flags.get(key);
+const str = (args: Args, key: string) => {
+  const v = args.flags.get(key);
   return typeof v === "string" ? v : null;
+};
+
+async function commitOid(cwd: string, rev: string): Promise<string> {
+  const oid = await gitOrNull(cwd, ["rev-parse", "-q", "--verify", `${rev}^{commit}`]);
+  if (!oid) throw new Error(`unknown revision ${rev}`);
+  return oid;
 }
 
-async function latestSession(paths: Awaited<ReturnType<typeof repoPaths>>, id: string | null): Promise<Session | null> {
-  if (id) return loadSession(paths, id);
-  const all = await listSessions(paths);
-  return all[0] ?? null;
-}
-
-async function resolveScope(args: Args, cwd: string): Promise<Scope | null> {
-  const paths = await repoPaths(cwd);
-  const { flags } = args;
-  if (flags.has("branch")) {
-    const name = flagStr(flags, "branch") ?? (await currentBranch(cwd));
+async function parseTarget(args: Args, paths: RepoPaths): Promise<Target | null> {
+  const cwd = paths.root;
+  const f = args.flags;
+  if (f.has("branch")) {
+    const current = await gitOrNull(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    const name = str(args, "branch") ?? current;
     if (!name) throw new Error("detached HEAD: pass --branch <name>");
-    return { kind: "branch", name, worktree: flags.has("worktree") };
+    return { kind: "branch", branch: name, working: name === current };
   }
-  if (flags.has("turn") || flags.has("to") || flags.has("from")) {
-    const session = await latestSession(paths, flagStr(flags, "session"));
-    if (!session) throw new Error("no sessions with checkpoints in this repo (are the hooks installed?)");
-    const to = Number(flagStr(flags, "to") ?? flagStr(flags, "turn") ?? session.turns.at(-1)?.turn ?? 1);
-    const from = Number(flagStr(flags, "from") ?? to);
-    return { kind: "turn", sessionId: session.id, from, to };
+  if (str(args, "commit")) {
+    const oid = await commitOid(cwd, str(args, "commit")!);
+    return { kind: "commits", from: oid, to: oid };
+  }
+  if (str(args, "range")) {
+    const [a, b] = str(args, "range")!.split("..");
+    if (!a || !b) throw new Error("--range expects <a>..<b>");
+    const first = (await git(cwd, ["rev-list", "--reverse", `${a}..${b}`])).split("\n")[0];
+    if (!first) throw new Error(`no commits in ${a}..${b}`);
+    return { kind: "commits", from: first, to: await commitOid(cwd, b) };
+  }
+  if (f.has("working")) return { kind: "working" };
+  if (f.has("stack")) return { kind: "stack" };
+  if (f.has("since-review")) return { kind: "since-review" };
+  if (f.has("turn") || f.has("turns")) {
+    const sessions = (await listSessions(paths)).filter((s) => s.root === paths.root);
+    const session = str(args, "session") ? sessions.find((s) => s.id === str(args, "session")) : sessions[0];
+    if (!session || session.turns.length === 0) throw new Error("no recorded agent turns in this worktree (run `turndiff install`)");
+    const [a, b] = (str(args, "turns") ?? str(args, "turn") ?? String(session.turns.at(-1)!.n)).split("-");
+    return { kind: "turns", session: session.id, from: Number(a), to: Number(b ?? a) };
   }
   return null;
 }
 
-async function defaultReviewScope(cwd: string): Promise<Scope | null> {
-  const paths = await repoPaths(cwd);
-  const session = (await listSessions(paths))[0];
-  const last = session?.turns.at(-1);
-  if (session && last) return { kind: "turn", sessionId: session.id, from: last.turn, to: last.turn };
-  const branch = await currentBranch(cwd);
-  return branch ? { kind: "branch", name: branch, worktree: true } : null;
-}
-
-async function openBrowser(url: string): Promise<void> {
+function openBrowser(url: string): void {
   const cmd = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
   try {
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
   } catch {
-    /* no opener; URL is printed anyway */
+    /* no opener; the URL is printed */
   }
 }
 
-/** Internal: the detached review server. Spawned by `review`, exits after the reviewer submits. */
-async function cmdServe(args: Args, cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  const port = Number(flagStr(args.flags, "port") ?? 0);
-  const preselectRaw = flagStr(args.flags, "preselect");
-  const preselect = preselectRaw ? (JSON.parse(preselectRaw) as Scope) : null;
-  const server = await startServer({ paths, port, preselect });
-  await writeState(paths, { pid: process.pid, port: server.port, url: server.url, startedAt: new Date().toISOString(), preselect });
-  const shutdown = async (result: DaemonResult) => {
-    await writeResult(paths, result);
-    setTimeout(() => {
-      server.stop();
-      process.exit(0);
-    }, 300);
+/** Start or reuse the server, point the open tab (or a new one) at the target. */
+async function present(args: Args, paths: RepoPaths): Promise<string> {
+  const target = await parseTarget(args, paths);
+  const { state, fresh } = await ensureDaemon(paths, Number(str(args, "port") ?? 0));
+  const hash = target ? targetToHash(target) : null;
+  const url = `${state.url}/${hash ? `#${hash}` : ""}`;
+  const { uiSeenAt } = (await (await fetch(`${state.url}/api/presence`)).json()) as { uiSeenAt: number };
+  const tabOpen = Date.now() - uiSeenAt < 10_000;
+  if (hash && tabOpen) await fetch(`${state.url}/api/focus`, { method: "POST", body: JSON.stringify({ hash }) });
+  const open = args.flags.has("open") || (!args.flags.has("no-open") && (fresh || !tabOpen));
+  if (open) openBrowser(url);
+  process.stderr.write(`turndiff: ${url}${tabOpen && !open ? " (review tab already open)" : ""}\n`);
+  return state.url;
+}
+
+async function cmdOpen(args: Args, paths: RepoPaths): Promise<number> {
+  await present(args, paths);
+  return 0;
+}
+
+async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
+  const base = await present(args, paths);
+  const since = Date.now();
+  // Stay under Claude Code's 10-minute Bash ceiling so the agent gets a clean "still waiting".
+  const timeoutMs = Number(str(args, "timeout") ?? 540) * 1000;
+  const deadline = timeoutMs > 0 ? since + timeoutMs : Number.POSITIVE_INFINITY;
+  while (Date.now() < deadline) {
+    let res: Response;
+    try {
+      res = await fetch(`${base}/api/wait?since=${since}`);
+    } catch {
+      process.stderr.write("turndiff: the review server stopped before feedback was submitted\n");
+      return 2;
+    }
+    if (res.status === 200) {
+      process.stdout.write(((await res.json()) as WaitResponse).markdown);
+      return 0;
+    }
+  }
+  process.stdout.write(`Still waiting for the reviewer at ${base}.\nThe review server keeps running. Run \`turndiff review\` again to keep waiting.\n`);
+  return 0;
+}
+
+/** Internal: the foreground server that `ensureDaemon` spawns detached. */
+async function cmdServe(args: Args, paths: RepoPaths): Promise<number> {
+  const code = codeStamp();
+  const server = await startServer({ paths, port: Number(str(args, "port") ?? 0) });
+  await writeState(paths, { pid: process.pid, port: server.port, url: server.url, startedAt: new Date().toISOString(), code });
+  const shutdown = async () => {
+    await clearState(paths, process.pid);
+    server.stop();
+    process.exit(0);
   };
-  process.on("SIGTERM", () => void shutdown({ kind: "cancelled" }));
-  // Idle guard: nobody reviews for a day, free the port.
-  setTimeout(() => void shutdown({ kind: "cancelled" }), 24 * 3600 * 1000).unref();
-  const outcome = await server.result;
-  await shutdown(outcome ? { kind: "submitted", submission: outcome } : { kind: "cancelled" });
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+  process.stderr.write(`turndiff: serving ${paths.root} at ${server.url}\n`);
+  await new Promise(() => {});
   return 0;
 }
 
-async function cmdReview(args: Args, cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  if (args.flags.has("restart")) await stopDaemon(paths);
-  let state = await readState(paths);
-  let fresh = false;
-  if (!state) {
-    const preselect = (await resolveScope(args, cwd)) ?? (await defaultReviewScope(cwd));
-    const port = Number(flagStr(args.flags, "port") ?? 0);
-    state = await spawnDaemon(paths, { port, preselect });
-    fresh = true;
-  }
-  process.stderr.write(`turndiff review: ${state.url}${fresh ? "" : " (reattached to running review)"}\n`);
-  if (fresh ? !args.flags.has("no-open") : args.flags.has("open")) await openBrowser(state.url);
-
-  // Default stays under Claude Code's 10-minute Bash ceiling so the agent gets a
-  // clean "still waiting" message instead of a killed tool call.
-  const timeoutSec = Number(flagStr(args.flags, "timeout") ?? 540);
-  const outcome = await waitForResult(paths, timeoutSec * 1000);
-
-  if (outcome === "timeout") {
-    process.stdout.write(
-      `Still waiting for the reviewer at ${state.url}.\nThe review server keeps running. Run \`turndiff review\` again to keep waiting for the feedback.\n`,
-    );
-    return 0;
-  }
-  if (outcome === "gone") {
-    process.stderr.write("turndiff review: the review server stopped without a result\n");
-    return 2;
-  }
-  if (outcome.kind === "cancelled") {
-    process.stdout.write("Review cancelled by the reviewer. No feedback.\n");
-    return 0;
-  }
-  const text = args.flags.has("json") ? JSON.stringify(outcome.submission, null, 2) : formatFeedback(outcome.submission);
-  const outFile = flagStr(args.flags, "out");
-  if (outFile) await writeFile(outFile, text + "\n");
-  process.stdout.write(text + "\n");
-  return 0;
-}
-
-async function cmdStop(cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  const stopped = await stopDaemon(paths);
-  process.stdout.write(stopped ? "review server stopped\n" : "no review server running\n");
-  return 0;
-}
-
-async function cmdDiff(args: Args, cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  const scope = await resolveScope(args, cwd);
-  if (!scope) throw new Error("diff needs --turn/--from/--to or --branch");
-  const ws = args.flags.has("ws");
-  if (scope.kind === "branch") {
-    const parent = (await resolveParent(cwd, scope.name)) ?? (await trunkComparisonRef(cwd, scope.name));
-    if (!parent) throw new Error(`no parent for ${scope.name}`);
-    const head = scope.worktree ? (await snapshotWorktree(paths, "turndiff diff")).commit : undefined;
-    const d = await branchDiff(cwd, scope.name, parent, { head, ignoreWhitespace: ws });
-    process.stdout.write(d.patch + (d.patch.endsWith("\n") || d.patch.length === 0 ? "" : "\n"));
-    return 0;
-  }
-  const session = await loadSession(paths, scope.sessionId);
-  if (!session) throw new Error(`unknown session ${scope.sessionId}`);
-  const fromTurn = session.turns.find((t) => t.turn === scope.from);
-  const toTurn = session.turns.find((t) => t.turn === scope.to);
-  const from = fromTurn?.pre ?? session.turns.filter((t) => t.turn < scope.from && t.post).at(-1)?.post;
-  const to = toTurn?.post;
-  if (!from || !to) throw new Error(`turn range ${scope.from}..${scope.to} incomplete (turn still running?)`);
-  const d = await turnDiff(cwd, from, to, { ignoreWhitespace: ws });
-  if (d.replay) process.stderr.write(`replayed pre-turn state onto new base ${d.replay.newBase.slice(0, 10)}${d.replay.conflicts ? " (conflicts)" : ""}\n`);
-  process.stdout.write(d.patch + (d.patch.endsWith("\n") || d.patch.length === 0 ? "" : "\n"));
-  return 0;
-}
-
-async function cmdTurns(args: Args, cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  const session = await latestSession(paths, flagStr(args.flags, "session"));
-  if (!session) {
-    process.stdout.write("no sessions\n");
-    return 0;
-  }
-  process.stdout.write(`session ${session.id} (${session.source}) — ${session.turns.length} turns\n`);
-  for (const t of session.turns) {
-    const state = t.post ? "done" : "running";
-    const prompt = t.prompt ? t.prompt.replace(/\s+/g, " ").slice(0, 80) : "(no prompt)";
-    const rebased = t.pre && t.post && t.pre.parentMergeBase && t.post.parentMergeBase && t.pre.parentMergeBase !== t.post.parentMergeBase ? " [rebased]" : "";
-    process.stdout.write(`  ${String(t.turn).padStart(3)}  ${state.padEnd(7)} ${t.startedAt.slice(0, 19)}  ${t.post?.branch ?? t.pre?.branch ?? "-"}${rebased}  ${prompt}\n`);
-  }
-  return 0;
-}
-
-async function cmdSessions(cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
-  const sessions = await listSessions(paths);
-  if (sessions.length === 0) process.stdout.write("no sessions\n");
-  for (const s of sessions) process.stdout.write(`${s.id}  ${s.source}  turns=${s.turns.length}  updated=${s.updatedAt.slice(0, 19)}\n`);
-  return 0;
-}
-
-async function cmdStack(cwd: string): Promise<number> {
-  const branch = await currentBranch(cwd);
-  const stack = await stackFor(cwd, branch, await readSpice(cwd));
-  if (stack.length === 0) {
-    process.stdout.write("no git-spice stack for this branch\n");
-    return 0;
-  }
-  for (const e of stack) {
-    const marker = e.isCurrent ? "*" : " ";
-    const pr = e.prNumber ? `  #${e.prNumber}` : "";
-    process.stdout.write(`${marker} ${"  ".repeat(e.depth)}${e.name}${e.isTrunk ? "" : ` (+${e.ahead} on ${e.base})`}${pr}\n`);
-  }
+async function cmdStop(paths: RepoPaths): Promise<number> {
+  process.stdout.write((await stopDaemon(paths)) ? "review server stopped\n" : "no review server running\n");
   return 0;
 }
 
 async function cmdHook(): Promise<number> {
-  // Never break the agent's turn: swallow everything, report on stderr.
+  // Never break the agent's turn: report problems on stderr and exit 0.
   try {
-    const raw = await Bun.stdin.text();
-    const payload = JSON.parse(raw) as Record<string, unknown>;
+    const payload = JSON.parse(await Bun.stdin.text()) as Record<string, unknown>;
     const sessionId = String(payload.session_id ?? "");
     const event = String(payload.hook_event_name ?? "");
     const cwd = String(payload.cwd ?? process.cwd());
-    if (!sessionId || !event) return 0;
-    if (event !== "UserPromptSubmit" && event !== "Stop") return 0;
+    if (!sessionId || (event !== "UserPromptSubmit" && event !== "Stop")) return 0;
     if ((await gitOrNull(cwd, ["rev-parse", "--is-inside-work-tree"])) !== "true") return 0;
-    const r = await handleHook({ sessionId, event, cwd, prompt: typeof payload.prompt === "string" ? payload.prompt : undefined, source: "claude-code" });
-    if (process.env.TURNDIFF_DEBUG) process.stderr.write(`turndiff: ${r.action}\n`);
+    const action = await recordHook({ sessionId, event, cwd, prompt: typeof payload.prompt === "string" ? payload.prompt : undefined });
+    if (process.env.TURNDIFF_DEBUG) process.stderr.write(`turndiff: ${action}\n`);
   } catch (e) {
     process.stderr.write(`turndiff hook: ${(e as Error).message}\n`);
   }
   return 0;
 }
 
-async function cmdClean(args: Args, cwd: string): Promise<number> {
-  const paths = await repoPaths(cwd);
+async function cmdClean(args: Args, paths: RepoPaths): Promise<number> {
   const sessions = await listSessions(paths);
-  let targets: Session[] = [];
-  if (args.flags.has("all")) targets = sessions;
-  else if (flagStr(args.flags, "session")) targets = sessions.filter((s) => s.id === flagStr(args.flags, "session"));
-  else {
-    const keep = Number(flagStr(args.flags, "keep") ?? 5);
-    targets = sessions.slice(keep);
-  }
+  const targets = args.flags.has("all") ? sessions : sessions.slice(Number(str(args, "keep") ?? 5));
   for (const s of targets) {
-    await deleteSession(paths, s.id);
+    await deleteSession(paths, s);
     process.stdout.write(`removed session ${s.id} (${s.turns.length} turns)\n`);
   }
-  if (targets.length === 0) process.stdout.write("nothing to clean\n");
+  if (args.flags.has("all")) {
+    // v0 left whole-worktree checkpoints and per-scope drafts behind.
+    const legacy = ((await gitOrNull(paths.root, ["for-each-ref", "--format=%(refname)", "refs/turndiff/"])) ?? "").split("\n").filter((r) => r && !r.startsWith("refs/turndiff/v1/"));
+    for (const ref of legacy) await git(paths.root, ["update-ref", "-d", ref]);
+    for (const dir of ["sessions", "drafts", "review"]) await rm(join(paths.commonDir, "turndiff", dir), { recursive: true, force: true });
+    if (legacy.length > 0) process.stdout.write(`removed ${legacy.length} v0 checkpoint refs\n`);
+  }
+  if (targets.length === 0) process.stdout.write("no sessions to remove\n");
   return 0;
 }
 
 async function cmdInstall(args: Args): Promise<number> {
   const home = homedir();
   const repoDir = dirname(dirname(fileURLToPath(import.meta.url)));
-  // Skill: symlink so edits in the repo show up immediately.
   const skillsDir = join(home, ".claude", "skills");
   await mkdir(skillsDir, { recursive: true });
   const skillLink = join(skillsDir, "turndiff-review");
-  if (existsSync(skillLink)) await rm(skillLink, { recursive: true, force: true });
+  await rm(skillLink, { recursive: true, force: true });
   await symlink(join(repoDir, "skills", "turndiff-review"), skillLink);
   process.stdout.write(`skill: ${skillLink} -> ${join(repoDir, "skills", "turndiff-review")}\n`);
   if (args.flags.has("skill-only")) return 0;
@@ -305,13 +227,12 @@ async function cmdInstall(args: Args): Promise<number> {
   const settingsPath = join(home, ".claude", "settings.json");
   const settings = existsSync(settingsPath) ? (JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>) : {};
   const hooks = (settings.hooks ?? {}) as Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>>;
-  // Absolute path: hook shells do not always share the interactive PATH.
+  // Absolute paths: hook shells do not always share the interactive PATH.
   const command = `${process.execPath} ${join(repoDir, "src", "cli.ts")} hook`;
   let changed = false;
   for (const event of ["UserPromptSubmit", "Stop"]) {
     const list = hooks[event] ?? [];
-    const present = list.some((g) => g.hooks?.some((h) => h.command === command));
-    if (!present) {
+    if (!list.some((g) => g.hooks?.some((h) => h.command === command))) {
       list.push({ hooks: [{ type: "command", command, timeout: 60 }] });
       hooks[event] = list;
       changed = true;
@@ -323,39 +244,29 @@ async function cmdInstall(args: Args): Promise<number> {
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n");
     process.stdout.write(`hooks: added UserPromptSubmit + Stop to ${settingsPath} (backup at .turndiff.bak)\n`);
   } else process.stdout.write(`hooks: already present in ${settingsPath}\n`);
-  process.stdout.write("Restart Claude Code sessions for hooks to take effect.\n");
   return 0;
 }
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
-  const cwd = process.cwd();
+  if (args.cmd === "help" || args.flags.has("help") || args.cmd === "-h") {
+    process.stdout.write(HELP);
+    return 0;
+  }
+  if (args.cmd === "hook") return cmdHook();
+  if (args.cmd === "install") return cmdInstall(args);
+  const paths = await repoPaths(process.cwd());
   switch (args.cmd) {
+    case "open":
+      return cmdOpen(args, paths);
     case "review":
-      return cmdReview(args, cwd);
+      return cmdReview(args, paths);
     case "serve":
-      return cmdServe(args, cwd);
+      return cmdServe(args, paths);
     case "stop":
-      return cmdStop(cwd);
-    case "diff":
-      return cmdDiff(args, cwd);
-    case "turns":
-      return cmdTurns(args, cwd);
-    case "sessions":
-      return cmdSessions(cwd);
-    case "stack":
-      return cmdStack(cwd);
-    case "hook":
-      return cmdHook();
+      return cmdStop(paths);
     case "clean":
-      return cmdClean(args, cwd);
-    case "install":
-      return cmdInstall(args);
-    case "help":
-    case "--help":
-    case "-h":
-      process.stdout.write(HELP);
-      return 0;
+      return cmdClean(args, paths);
     default:
       process.stderr.write(`unknown command: ${args.cmd}\n\n${HELP}`);
       return 1;

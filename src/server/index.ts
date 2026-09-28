@@ -1,221 +1,247 @@
-// Local review server. Serves the UI, answers diff queries, and resolves a
-// promise when the reviewer submits so the CLI can print feedback and exit.
+// Local review server for one worktree. Serves the UI and the API in
+// src/model.ts, keeps the review, and hands submissions to a waiting
+// `turndiff review` through a long-poll.
 
-import { ensureUiBuilt, serveAsset } from "./assets.ts";
-import { currentBranch, gitOrNull, type RepoPaths } from "../git/exec.ts";
-import { listSessions, loadSession, snapshotWorktree, type Checkpoint, type Session } from "../git/checkpoints.ts";
-import { readSpice, resolveParent, stackFor, trunkComparisonRef } from "../git/spice.ts";
-import { branchDiff, diffRange, fileAt, turnDiff, type DiffResult } from "../git/diff.ts";
-import type { DiffResponse, ReviewState, Scope, StateResponse, Submission } from "../shared.ts";
-import { readReview, writeReview } from "./reviews.ts";
 import { basename } from "node:path";
-
-export interface ServerOptions {
-  paths: RepoPaths;
-  port: number;
-  preselect: Scope | null;
-}
+import { ensureUiBuilt, serveAsset } from "./assets.ts";
+import { gitRaw, type RepoPaths } from "../git/exec.ts";
+import { snapshotWorktree } from "../git/diff.ts";
+import { loadStack, repoVersion, type Stack } from "../git/stack.ts";
+import { captureSnapshot, listSessions, summarize } from "../git/snapshots.ts";
+import { resolveView, TargetError } from "../git/views.ts";
+import { formatFeedback } from "../feedback.ts";
+import { outdatedComments, ReviewStore } from "./store.ts";
+import { hashToTarget, type Comment, type Decision, type RepoState, type SubmitResponse, type WaitResponse } from "../model.ts";
 
 export interface RunningServer {
   url: string;
   port: number;
-  /** Resolves with the submission, or null when the reviewer cancels. */
-  result: Promise<Submission | null>;
   stop(): void;
 }
 
-export async function startServer(opts: ServerOptions): Promise<RunningServer> {
-  const outDir = await ensureUiBuilt({ log: (m) => process.stderr.write("turndiff: " + m + "\n") });
+const WAIT_MS = 25_000;
+const IDLE_EXIT_MS = 8 * 3600_000;
+const DECISIONS: readonly Decision[] = ["approve", "request_changes", "comment"];
+
+export async function startServer(opts: { paths: RepoPaths; port: number }): Promise<RunningServer> {
   const { paths } = opts;
-  const cwd = paths.root;
-  const startedAt = new Date().toISOString();
-  let resolveResult: (s: Submission | null) => void = () => {};
-  const result = new Promise<Submission | null>((r) => (resolveResult = r));
-  // Cache worktree snapshots per request burst so the file tree and diff share one.
-  let worktreeSnapshot: { at: number; commit: string } | null = null;
+  // Built on the first page request so the API is up at once.
+  let ui: Promise<string> | null = null;
+  const store = await ReviewStore.open(paths);
+
+  let cached: { version: string; stack: Stack } | null = null;
+  let snapshot: { version: string; oid: Promise<string> } | null = null;
+  const current = async () => {
+    const { version, status } = await repoVersion(paths);
+    if (cached?.version !== version) cached = { version, stack: await loadStack(paths, status) };
+    return cached;
+  };
+  const worktreeFor = (version: string) => {
+    if (snapshot?.version !== version) snapshot = { version, oid: snapshotWorktree(paths) };
+    return snapshot.oid;
+  };
+
+  const waiters = new Set<(r: WaitResponse) => void>();
+  let lastSubmission: (WaitResponse & { atMs: number }) | null = null;
+  let lastWaitAt = 0;
+  let lastUiAt = 0;
+  let lastRequestAt = Date.now();
+  let focus: RepoState["focus"] = null;
 
   const json = (data: unknown, status = 200) => Response.json(data, { status });
-  const bad = (msg: string, status = 400) => json({ error: msg }, status);
+  const fail = (e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e);
+    return json({ error: message }, e instanceof TargetError || e instanceof BadRequest ? 400 : 500);
+  };
+  const reviewState = async () => store.state((await current()).stack);
 
-  async function worktreeHead(): Promise<string> {
-    if (worktreeSnapshot && Date.now() - worktreeSnapshot.at < 2000) return worktreeSnapshot.commit;
-    const snap = await snapshotWorktree(paths, "turndiff worktree snapshot");
-    worktreeSnapshot = { at: Date.now(), commit: snap.commit };
-    return snap.commit;
+  async function repoState(): Promise<RepoState> {
+    const { version, stack } = await current();
+    const sessions = (await listSessions(paths)).filter((s) => s.root === paths.root).map(summarize);
+    return {
+      name: basename(paths.root),
+      trunk: stack.trunk,
+      branches: stack.branches,
+      worktree: stack.worktree,
+      sessions,
+      lastReviewAt: store.lastReview?.at ?? null,
+      agentWaiting: waiters.size > 0 || Date.now() - lastWaitAt < 3000,
+      focus,
+      version,
+    };
   }
 
-  async function state(): Promise<StateResponse> {
-    const [branch, head, sessions, spice] = await Promise.all([
-      currentBranch(cwd),
-      gitOrNull(cwd, ["rev-parse", "--short", "HEAD"]),
-      listSessions(paths),
-      readSpice(cwd),
-    ]);
-    const stack = await stackFor(cwd, branch, spice);
-    return { repo: { root: cwd, name: basename(cwd), branch, head }, sessions, stack, preselect: opts.preselect, startedAt };
+  async function feedback(decision: Decision) {
+    const { stack } = await current();
+    return formatFeedback({
+      decision,
+      summary: store.summary,
+      comments: [...store.comments],
+      outdated: await outdatedComments(paths, stack, store.comments),
+      branchOrder: stack.branches.map((b) => b.name),
+      prs: new Map(stack.branches.flatMap((b) => (b.pr ? [[b.name, b.pr.number] as const] : []))),
+      usesSpice: stack.spice,
+    });
   }
 
-  async function resolveTurnScope(
-    session: Session,
-    from: number,
-    to: number,
-  ): Promise<{ from: Checkpoint; to: Checkpoint; label: string }> {
-    const fromTurn = session.turns.find((t) => t.turn === from);
-    const toTurn = session.turns.find((t) => t.turn === to);
-    if (!fromTurn || !toTurn) throw new Error(`turn ${from} or ${to} not found in session ${session.id}`);
-    // A turn without its own `pre` (hooks installed mid-turn) starts where the previous turn ended.
-    const fromCp = fromTurn.pre ?? session.turns.filter((t) => t.turn < from && t.post).at(-1)?.post ?? null;
-    let toCp = toTurn.post;
-    let live = false;
-    if (!toCp) {
-      // Turn still running: compare against the worktree right now.
-      const commit = await worktreeHead();
-      const branch = await currentBranch(cwd);
-      toCp = {
-        kind: "post",
-        ref: "(worktree)",
-        commit,
-        head: null,
-        branch,
-        parent: fromCp?.parent ?? null,
-        parentMergeBase: null,
-        createdAt: new Date().toISOString(),
-      };
-      if (branch) {
-        const p = (await resolveParent(cwd, branch)) ?? (await trunkComparisonRef(cwd, branch));
-        if (p) toCp.parent = p;
-      }
-      live = true;
-    }
-    if (!fromCp) throw new Error(`turn ${from} has no starting checkpoint`);
-    const label = from === to ? `Turn ${to}${live ? " (in progress)" : ""}` : `Turns ${from}–${to}${live ? " (in progress)" : ""}`;
-    return { from: fromCp, to: toCp, label };
+  async function submit(decision: Decision, summary: string): Promise<SubmitResponse> {
+    await store.setSummary(summary);
+    const markdown = await feedback(decision);
+    const snap = await captureSnapshot(paths, `review-${Date.now()}`);
+    await store.submitted({ decision, markdown, snapshot: snap.id });
+    const delivered = waiters.size > 0;
+    lastSubmission = { decision, markdown, submittedAt: new Date().toISOString(), atMs: Date.now() };
+    for (const resolve of waiters) resolve(lastSubmission);
+    waiters.clear();
+    return { markdown, delivered };
   }
 
-  async function diffFor(scope: Scope, ignoreWhitespace: boolean): Promise<DiffResponse> {
-    if (scope.kind === "turn") {
-      const session = await loadSession(paths, scope.sessionId);
-      if (!session) throw new Error(`unknown session ${scope.sessionId}`);
-      const { from, to, label } = await resolveTurnScope(session, scope.from, scope.to);
-      const d = await turnDiff(cwd, from, to, { ignoreWhitespace });
-      return { ...d, scope, label };
-    }
-    const parent = (await resolveParent(cwd, scope.name)) ?? (await trunkComparisonRef(cwd, scope.name));
-    if (!parent) throw new Error(`no parent branch for ${scope.name}`);
-    let d: DiffResult;
-    if (scope.worktree) {
-      if ((await currentBranch(cwd)) !== scope.name)
-        throw new Error(`Switch back to ${scope.name} or turn off Include uncommitted changes to review this branch.`);
-      const head = await worktreeHead();
-      d = await branchDiff(cwd, scope.name, parent, { head, ignoreWhitespace });
-    } else {
-      d = await branchDiff(cwd, scope.name, parent, { ignoreWhitespace });
-    }
-    return { ...d, scope, label: `${scope.name} ← ${parent}${scope.worktree ? " (with uncommitted)" : ""}` };
+  async function wait(since: number): Promise<Response> {
+    lastWaitAt = Date.now();
+    if (lastSubmission && lastSubmission.atMs > since) return json(lastSubmission);
+    let resolveWait!: (r: WaitResponse) => void;
+    const submitted = new Promise<WaitResponse>((r) => (resolveWait = r));
+    waiters.add(resolveWait);
+    const timeout = Bun.sleep(WAIT_MS).then(() => null);
+    const result = await Promise.race([submitted, timeout]);
+    waiters.delete(resolveWait);
+    lastWaitAt = Date.now();
+    return result ? json(result) : new Response(null, { status: 204 });
   }
 
-  function parseScope(url: URL): Scope {
-    const kind = url.searchParams.get("kind");
-    if (kind === "turn") {
-      const sessionId = url.searchParams.get("session") ?? "";
-      const to = Number(url.searchParams.get("to"));
-      const from = Number(url.searchParams.get("from") ?? to);
-      if (!sessionId || !Number.isFinite(to)) throw new Error("turn scope needs session and to");
-      return { kind: "turn", sessionId, from, to };
+  const route = <T>(handler: (req: Bun.BunRequest<T & string>) => Promise<Response>) => async (req: Bun.BunRequest<T & string>) => {
+    lastRequestAt = Date.now();
+    try {
+      return await handler(req);
+    } catch (e) {
+      return fail(e);
     }
-    if (kind === "branch") {
-      const name = url.searchParams.get("name");
-      if (!name) throw new Error("branch scope needs name");
-      return { kind: "branch", name, worktree: url.searchParams.get("worktree") === "1" };
-    }
-    throw new Error(`unknown scope kind ${kind}`);
-  }
+  };
 
   const server = Bun.serve({
     port: opts.port,
     hostname: "127.0.0.1",
     development: false,
+    idleTimeout: 120,
     routes: {
-      "/api/review": {
-        GET: async (req) => json(await readReview(paths, parseScope(new URL(req.url)))),
-        PUT: async (req) => {
-          const scope = parseScope(new URL(req.url));
-          const body = (await req.json()) as ReviewState;
-          if (
-            !body ||
-            !Array.isArray(body.comments) ||
-            !Array.isArray(body.drafts) ||
-            !Array.isArray(body.viewed) ||
-            typeof body.summary !== "string" ||
-            !body.files ||
-            !Number.isFinite(body.updatedAt)
-          )
-            return bad("Invalid review draft");
-          await writeReview(paths, scope, body);
-          return json({ ok: true });
-        },
-      },
-      "/api/state": async () => json(await state()),
-      "/api/diff": async (req) => {
-        try {
-          const url = new URL(req.url);
-          const scope = parseScope(url);
-          return json(await diffFor(scope, url.searchParams.get("ws") === "1"));
-        } catch (e) {
-          return bad((e as Error).message);
-        }
-      },
-      "/api/patch": async (req) => {
+      "/api/state": route(async () => {
+        lastUiAt = Date.now();
+        return json(await repoState());
+      }),
+      "/api/presence": route(async () => json({ uiSeenAt: lastUiAt })),
+      "/api/view": route(async (req) => {
         const url = new URL(req.url);
-        const base = url.searchParams.get("base") ?? "",
-          head = url.searchParams.get("head") ?? "";
-        if (![base, head].every((oid) => /^[0-9a-f]{40,64}$/.test(oid))) return bad("Invalid revision");
-        return json(await diffRange(cwd, base, head, url.searchParams.get("ws") === "1"));
+        const target = hashToTarget(url.searchParams.get("t") ?? "");
+        if (!target) throw new BadRequest("unknown target");
+        const { version, stack } = await current();
+        const view = await resolveView(
+          { paths, stack, version, worktree: () => worktreeFor(version), lastReview: store.lastReview?.snapshot ?? null, ignoreWhitespace: url.searchParams.get("ws") === "1" },
+          target,
+        );
+        return json(view);
+      }),
+      "/api/blob/:oid": route(async (req) => {
+        const { oid } = req.params as { oid: string };
+        if (!/^[0-9a-f]{40,64}$/.test(oid)) throw new BadRequest("bad oid");
+        const r = await gitRaw(paths.root, ["cat-file", "blob", oid]);
+        if (r.code !== 0) return json({ error: `unknown blob ${oid}` }, 404);
+        return new Response(r.stdout, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "max-age=31536000, immutable" } });
+      }),
+      "/api/review": route(async () => json(await reviewState())),
+      "/api/comments/:id": {
+        PUT: route(async (req) => {
+          const comment = parseComment(await req.json(), (req.params as { id: string }).id);
+          await store.upsertComment(comment);
+          return json(await reviewState());
+        }),
+        DELETE: route(async (req) => {
+          await store.deleteComment((req.params as { id: string }).id);
+          return json(await reviewState());
+        }),
       },
-      "/api/file": async (req) => {
-        const url = new URL(req.url);
-        const oid = url.searchParams.get("oid");
-        const path = url.searchParams.get("path");
-        if (!oid || !path || !/^[0-9a-f]{7,64}$/.test(oid)) return bad("oid and path required");
-        const contents = await fileAt(cwd, oid, path);
-        return json({ contents });
+      "/api/viewed": {
+        PUT: route(async (req) => {
+          const body = (await req.json()) as { key?: unknown; viewed?: unknown };
+          if (typeof body.key !== "string" || typeof body.viewed !== "boolean") throw new BadRequest("expected { key, viewed }");
+          await store.setViewed(body.key, body.viewed);
+          return json(await reviewState());
+        }),
       },
+      "/api/summary": {
+        PUT: route(async (req) => {
+          const body = (await req.json()) as { summary?: unknown };
+          if (typeof body.summary !== "string") throw new BadRequest("expected { summary }");
+          await store.setSummary(body.summary);
+          return json(await reviewState());
+        }),
+      },
+      "/api/feedback": route(async (req) => json({ markdown: await feedback(parseDecision(new URL(req.url).searchParams.get("decision") ?? "comment")) })),
       "/api/submit": {
-        POST: async (req) => {
-          const body = (await req.json()) as Submission;
-          if (!body || !body.scope || !Array.isArray(body.comments)) return bad("malformed submission");
-          const previous = await readReview(paths, body.scope);
-          await writeReview(paths, body.scope, {
-            comments: [],
-            drafts: [],
-            viewed: [],
-            summary: "",
-            files: {},
-            updatedAt: Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1),
-          });
-          queueMicrotask(() => resolveResult(body));
-          return json({ ok: true });
-        },
+        POST: route(async (req) => {
+          const body = (await req.json()) as { decision?: unknown; summary?: unknown };
+          return json(await submit(parseDecision(body.decision), typeof body.summary === "string" ? body.summary : store.summary));
+        }),
       },
-      "/api/cancel": {
-        POST: async () => {
-          queueMicrotask(() => resolveResult(null));
+      "/api/focus": {
+        POST: route(async (req) => {
+          const body = (await req.json()) as { hash?: unknown };
+          if (typeof body.hash !== "string" || !hashToTarget(body.hash)) throw new BadRequest("expected { hash } of a target");
+          focus = { hash: body.hash, at: Date.now() };
           return json({ ok: true });
-        },
+        }),
       },
+      "/api/wait": route(async (req) => wait(Number(new URL(req.url).searchParams.get("since") ?? 0))),
     },
-    fetch(req) {
-      return serveAsset(outDir, new URL(req.url).pathname) ?? new Response("not found", { status: 404 });
+    async fetch(req) {
+      lastRequestAt = Date.now();
+      ui ??= ensureUiBuilt({ log: (m) => process.stderr.write(`turndiff: ${m}\n`) });
+      try {
+        return serveAsset(await ui, new URL(req.url).pathname) ?? new Response("not found", { status: 404 });
+      } catch (e) {
+        ui = null;
+        return new Response(`turndiff UI build failed:\n${(e as Error).message}`, { status: 500 });
+      }
     },
     error(err) {
-      return json({ error: err.message }, 500);
+      return fail(err);
     },
   });
 
-  return {
-    url: `http://127.0.0.1:${server.port}`,
-    port: server.port!,
-    result,
-    stop: () => server.stop(true),
-  };
+  const idle = setInterval(() => {
+    if (Date.now() - lastRequestAt > IDLE_EXIT_MS) process.kill(process.pid, "SIGTERM");
+  }, 60_000);
+  idle.unref();
+
+  return { url: `http://127.0.0.1:${server.port}`, port: server.port!, stop: () => server.stop(true) };
+}
+
+class BadRequest extends Error {}
+
+function parseDecision(raw: unknown): Decision {
+  if (typeof raw === "string" && (DECISIONS as readonly string[]).includes(raw)) return raw as Decision;
+  throw new BadRequest(`decision must be one of ${DECISIONS.join(", ")}`);
+}
+
+function parseComment(raw: unknown, id: string): Comment {
+  const c = raw as Comment;
+  const a = c?.anchor;
+  const ok =
+    c &&
+    c.id === id &&
+    typeof c.body === "string" &&
+    a &&
+    typeof a.path === "string" &&
+    (a.side === "old" || a.side === "new") &&
+    Number.isInteger(a.start) &&
+    Number.isInteger(a.end) &&
+    typeof a.blob === "string" &&
+    Array.isArray(c.snippet) &&
+    c.origin &&
+    typeof c.origin.head === "string" &&
+    typeof c.origin.working === "boolean" &&
+    typeof c.origin.target === "object" &&
+    typeof c.createdAt === "string" &&
+    typeof c.updatedAt === "string";
+  if (!ok) throw new BadRequest("malformed comment");
+  return c;
 }

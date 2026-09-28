@@ -1,86 +1,89 @@
-// Render a submission as markdown for the agent. Anchors use file:line so the
-// agent can jump straight to the spot; the snippet gives it the exact code the
-// comment refers to even if the file has moved on.
+// The markdown the agent receives: every comment, grouped by the branch it was
+// written on, in stack order. Anchors are path:line so the agent can jump to
+// the spot; the snippet pins the exact code in case the file has moved on.
 
-import type { Submission } from "./shared.ts";
+import type { Comment, Decision } from "./model.ts";
 
-const DECISION_LABEL: Record<Submission["decision"], string> = {
+const DECISION_LABEL: Record<Decision, string> = {
   approve: "Approved",
   request_changes: "Changes requested",
   comment: "Comments only",
 };
 
-export function formatFeedback(sub: Submission): string {
-  const out: string[] = [];
-  out.push(`# Review feedback: ${sub.label}`);
-  out.push("");
-  out.push(`Decision: **${DECISION_LABEL[sub.decision]}**`);
-  out.push(`Diff: \`${sub.baseOid.slice(0, 10)}..${sub.headOid.slice(0, 10)}\``);
-  if (sub.summary.trim()) {
-    out.push("");
-    out.push("## Summary");
-    out.push("");
-    out.push(sub.summary.trim());
-  }
-  if (sub.comments.length > 0) {
-    out.push("");
-    out.push(`## Comments (${sub.comments.length})`);
-    const byFile = new Map<string, Submission["comments"]>();
-    for (const c of sub.comments) byFile.set(c.file, [...(byFile.get(c.file) ?? []), c]);
-    for (const [file, comments] of byFile) {
-      comments.sort((a, b) => a.lineStart - b.lineStart);
-      for (const c of comments) {
-        const range = c.lineStart === c.lineEnd ? `${c.lineStart}` : `${c.lineStart}-${c.lineEnd}`;
-        const sideNote = c.side === "deletions" ? " (removed lines)" : "";
-        out.push("");
-        out.push(`### ${file}:${range}${sideNote}`);
-        if (c.outdated)
-          out.push(
-            `Original context (code has since changed${c.revision ? `; reviewed revision ${c.revision}` : ""}). Line numbers below refer to that context.`,
-          );
-        if (c.snippet.length > 0) {
-          out.push("");
-          out.push("```" + languageHint(file));
-          out.push(...c.snippet);
-          out.push("```");
-        }
-        out.push("");
-        out.push(c.body.trim());
-      }
-    }
-  }
-  if (sub.comments.length === 0 && !sub.summary.trim()) {
-    out.push("");
-    out.push("_No comments._");
-  }
-  out.push("");
-  if (sub.decision === "request_changes") {
-    out.push("Address every comment above, then run `turndiff review` again so the reviewer can re-check.");
-  }
-  return out.join("\n");
+export interface FeedbackInput {
+  decision: Decision;
+  summary: string;
+  comments: Comment[];
+  outdated: ReadonlySet<string>;
+  /** Branch names in stack order, parents first. */
+  branchOrder: string[];
+  prs: ReadonlyMap<string, number>;
+  usesSpice: boolean;
 }
 
+export function formatFeedback(input: FeedbackInput): string {
+  const { comments } = input;
+  const groups = new Map<string | null, Comment[]>();
+  for (const c of comments) groups.set(c.origin.branch, [...(groups.get(c.origin.branch) ?? []), c]);
+  const rank = (b: string | null) => (b === null ? Number.MAX_SAFE_INTEGER : input.branchOrder.indexOf(b) === -1 ? input.branchOrder.length : input.branchOrder.indexOf(b));
+  const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
+
+  const out: string[] = ["# Review feedback", ""];
+  const spread = ordered.length > 1 ? ` on ${ordered.length} branches` : "";
+  out.push(`Decision: **${DECISION_LABEL[input.decision]}** · ${comments.length} comment${comments.length === 1 ? "" : "s"}${spread}`);
+  if (input.summary.trim()) out.push("", "## Summary", "", input.summary.trim());
+
+  for (const [branch, list] of ordered) {
+    const pr = branch ? input.prs.get(branch) : undefined;
+    out.push("", branch ? `## Branch \`${branch}\`${pr ? ` (#${pr})` : ""}` : "## Detached HEAD");
+    list.sort((a, b) => (a.anchor.path === b.anchor.path ? a.anchor.start - b.anchor.start : a.anchor.path < b.anchor.path ? -1 : 1));
+    for (const c of list) {
+      const { path, side, start, end } = c.anchor;
+      const lines = start === end ? `${start}` : `${start}-${end}`;
+      out.push("", `### \`${path}:${lines}\`${side === "old" ? " (removed lines, old numbering)" : ""}`);
+      const where = c.origin.working ? "uncommitted changes" : `commit ${c.origin.head.slice(0, 10)}`;
+      out.push(`Written against ${where}.${input.outdated.has(c.id) ? " This code has changed since; use the snippet to find the spot." : ""}`);
+      if (c.snippet.length > 0) out.push("", "```" + languageHint(path), ...c.snippet, "```");
+      out.push("", c.body.trim());
+    }
+  }
+  if (comments.length === 0 && !input.summary.trim()) out.push("", "_No comments._");
+
+  if (input.decision !== "approve" && comments.length > 0) {
+    out.push("", "---", "");
+    if (ordered.length > 1 || ordered[0]?.[0]) {
+      out.push(
+        input.usesSpice
+          ? "Fix each comment on the branch it is listed under: `git-spice branch checkout <branch>`, commit there, then `git-spice upstack restack` so the branches above pick it up."
+          : "Fix each comment on the branch it is listed under, then rebase the branches stacked above it.",
+      );
+    }
+    out.push("When every comment is addressed, run `turndiff review` again so the reviewer can re-check.");
+  }
+  return out.join("\n") + "\n";
+}
+
+const LANGUAGES: Record<string, string> = {
+  py: "python",
+  ts: "ts",
+  tsx: "tsx",
+  js: "js",
+  jsx: "jsx",
+  json: "json",
+  md: "md",
+  yml: "yaml",
+  yaml: "yaml",
+  sh: "bash",
+  go: "go",
+  rs: "rust",
+  rb: "ruby",
+  tf: "hcl",
+  sql: "sql",
+  css: "css",
+  html: "html",
+  toml: "toml",
+};
+
 function languageHint(file: string): string {
-  const ext = file.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    py: "python",
-    ts: "ts",
-    tsx: "tsx",
-    js: "js",
-    jsx: "jsx",
-    json: "json",
-    md: "md",
-    yml: "yaml",
-    yaml: "yaml",
-    sh: "bash",
-    go: "go",
-    rs: "rust",
-    rb: "ruby",
-    tf: "hcl",
-    sql: "sql",
-    css: "css",
-    html: "html",
-    toml: "toml",
-  };
-  return map[ext] ?? "";
+  return LANGUAGES[file.split(".").pop()?.toLowerCase() ?? ""] ?? "";
 }

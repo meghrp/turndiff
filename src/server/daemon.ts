@@ -1,31 +1,26 @@
-// The review server runs as a detached daemon so it outlives the agent's shell
-// tool (Claude Code kills a Bash call after 10 minutes). `turndiff review`
-// starts or reattaches to it, then waits for result.json.
+// The review server runs detached, one per worktree, so it outlives the
+// agent's shell tool (Claude Code kills a Bash call after 10 minutes) and keeps
+// the reviewer's tab alive between reviews. The CLI finds it through a state
+// file and restarts it when turndiff's own source has changed since it started.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepoPaths } from "../git/exec.ts";
-import type { Scope, Submission } from "../shared.ts";
 
 export interface DaemonState {
   pid: number;
   port: number;
   url: string;
   startedAt: string;
-  preselect: Scope | null;
+  /** Newest mtime under turndiff's src/ when the server started. */
+  code: number;
 }
 
-export type DaemonResult = { kind: "submitted"; submission: Submission } | { kind: "cancelled" };
-
-export function reviewDir(paths: RepoPaths): string {
-  return join(paths.commonDir, "turndiff", "review");
-}
-
-const stateFile = (paths: RepoPaths) => join(reviewDir(paths), "state.json");
-const resultFile = (paths: RepoPaths) => join(reviewDir(paths), "result.json");
+const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
+const stateFile = (paths: RepoPaths) => join(paths.gitDir, "turndiff", "server.json");
 
 function alive(pid: number): boolean {
   try {
@@ -36,41 +31,36 @@ function alive(pid: number): boolean {
   }
 }
 
+export function codeStamp(dir = SRC): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    newest = Math.max(newest, entry.isDirectory() ? codeStamp(p) : statSync(p).mtimeMs);
+  }
+  return newest;
+}
+
 export async function readState(paths: RepoPaths): Promise<DaemonState | null> {
   const f = stateFile(paths);
   if (!existsSync(f)) return null;
   try {
     const s = JSON.parse(await readFile(f, "utf8")) as DaemonState;
-    if (!alive(s.pid)) {
-      await rm(f, { force: true });
-      return null;
-    }
-    return s;
+    if (alive(s.pid)) return s;
   } catch {
-    return null;
+    /* unreadable state: treat as no server */
   }
+  await rm(f, { force: true });
+  return null;
 }
 
 export async function writeState(paths: RepoPaths, s: DaemonState): Promise<void> {
-  await mkdir(reviewDir(paths), { recursive: true });
+  await mkdir(dirname(stateFile(paths)), { recursive: true });
   await writeFile(stateFile(paths), JSON.stringify(s));
 }
 
-export async function writeResult(paths: RepoPaths, r: DaemonResult): Promise<void> {
-  await mkdir(reviewDir(paths), { recursive: true });
-  const f = resultFile(paths);
-  await writeFile(`${f}.tmp`, JSON.stringify(r));
-  await Bun.write(f, Bun.file(`${f}.tmp`));
-  await rm(`${f}.tmp`, { force: true });
-  await rm(stateFile(paths), { force: true });
-}
-
-export async function takeResult(paths: RepoPaths): Promise<DaemonResult | null> {
-  const f = resultFile(paths);
-  if (!existsSync(f)) return null;
-  const r = JSON.parse(await readFile(f, "utf8")) as DaemonResult;
-  await rm(f, { force: true });
-  return r;
+export async function clearState(paths: RepoPaths, pid: number): Promise<void> {
+  const s = await readState(paths);
+  if (!s || s.pid === pid) await rm(stateFile(paths), { force: true });
 }
 
 export async function stopDaemon(paths: RepoPaths): Promise<boolean> {
@@ -81,40 +71,26 @@ export async function stopDaemon(paths: RepoPaths): Promise<boolean> {
   } catch {
     /* already gone */
   }
+  for (let i = 0; i < 50 && alive(s.pid); i++) await Bun.sleep(50);
   await rm(stateFile(paths), { force: true });
   return true;
 }
 
-/** Spawn `turndiff serve` detached and wait until it has written its state. */
-export async function spawnDaemon(paths: RepoPaths, opts: { port: number; preselect: Scope | null }): Promise<DaemonState> {
-  await rm(resultFile(paths), { force: true });
-  const cli = join(dirname(dirname(fileURLToPath(import.meta.url))), "cli.ts");
-  const args = [cli, "serve", "--port", String(opts.port)];
-  if (opts.preselect) args.push("--preselect", JSON.stringify(opts.preselect));
+/** The running server for this worktree, started (or restarted on new code) as needed. */
+export async function ensureDaemon(paths: RepoPaths, port: number): Promise<{ state: DaemonState; fresh: boolean }> {
+  const running = await readState(paths);
+  if (running && running.code >= codeStamp()) return { state: running, fresh: false };
+  // A restart keeps the port so an open review tab reconnects on its own.
+  if (running) await stopDaemon(paths);
+  const args = [join(SRC, "cli.ts"), "serve", "--port", String(running?.port ?? port)];
   const child = spawn(process.execPath, args, { cwd: paths.root, detached: true, stdio: "ignore", env: process.env });
   child.unref();
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const s = await readState(paths);
-    if (s) return s;
-    if (child.exitCode !== null) throw new Error(`review server exited early (code ${child.exitCode})`);
+    if (s && s.pid === child.pid) return { state: s, fresh: true };
+    if (child.exitCode !== null) throw new Error(`review server exited early (code ${child.exitCode}); run \`turndiff serve\` to see why`);
     await Bun.sleep(100);
   }
-  throw new Error("review server did not start within 30s");
-}
-
-/** Poll for a result until `timeoutMs` (0 = forever). */
-export async function waitForResult(paths: RepoPaths, timeoutMs: number): Promise<DaemonResult | "timeout" | "gone"> {
-  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
-  while (Date.now() < deadline) {
-    const r = await takeResult(paths);
-    if (r) return r;
-    if (!(await readState(paths))) {
-      // Daemon died without writing a result (killed, crashed).
-      const late = await takeResult(paths);
-      return late ?? "gone";
-    }
-    await Bun.sleep(400);
-  }
-  return "timeout";
+  throw new Error("review server did not start within 60s");
 }

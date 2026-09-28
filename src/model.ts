@@ -69,6 +69,11 @@ export interface RepoState {
   lastReviewAt: string | null;
   /** True while a `turndiff review` CLI is waiting for feedback. */
   agentWaiting: boolean;
+  /**
+   * A target the CLI asked the open tab to show (targetToHash form). Navigate
+   * when `at` is newer than both page load and the last focus handled.
+   */
+  focus: { hash: string; at: number } | null;
   /** Changes whenever refs or the worktree change. The UI compares it to offer a reload. */
   version: string;
 }
@@ -203,6 +208,7 @@ export interface WaitResponse {
 //   GET    /api/feedback?decision=<d>       { markdown } preview of what submit would send
 //   POST   /api/submit                      body SubmitRequest -> SubmitResponse
 //   GET    /api/wait?since=<epoch ms>       WaitResponse, or 204 after ~25s with no submission (CLI long-poll)
+//   POST   /api/focus                       body { hash } (CLI only) -> sets RepoState.focus
 
 export function viewedKey(path: string, blob: Oid): string {
   return `${path}\0${blob}`;
