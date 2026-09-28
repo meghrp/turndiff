@@ -40,7 +40,7 @@ export function App() {
 
   const refreshState = useCallback(async () => {
     try {
-      const next = (await api.state()) as Repo;
+      const next = await api.state();
       setRepoError(null);
       setRepo((old) => (old && JSON.stringify(old) === JSON.stringify(next) ? old : next));
       const f = next.focus;
