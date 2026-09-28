@@ -289,7 +289,7 @@ const Replay = ({ replay }: { replay: { conflicts: boolean } }) => (
     className={`replay${replay.conflicts ? " conflict" : ""}`}
     title="The old side was replayed onto the moved parent to hide restack noise."
   >
-    {replay.conflicts ? "replayed with conflicts" : "replayed onto parent"}
+    {replay.conflicts ? "restacked, conflicts" : "restacked"}
   </span>
 );
 
