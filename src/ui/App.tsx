@@ -7,7 +7,7 @@ import { commentsFor, indexComments } from "./lines.ts";
 import { DiffPane, fileViewedKey, viewEntries, type DiffPaneHandle } from "./DiffPane.tsx";
 import { Rail } from "./Rail.tsx";
 import { ReviewPanel } from "./ReviewPanel.tsx";
-import type { ComposerState, FileEntry } from "./FileCard.tsx";
+import { Counts, type ComposerState, type FileEntry } from "./FileCard.tsx";
 
 const POLL_MS = 4000;
 const NARROW = 900;
@@ -248,7 +248,11 @@ export function App() {
   }
 
   const stale = !!view && repo.version !== view.version;
+  // Commit views name the branch each commit belongs to.
+  const onBranches =
+    view?.target.kind === "commits" ? [...new Set(view.sections.map((s) => s.branch ?? repo.trunk))].join(", ") : null;
   const commits = new Set(view?.sections.flatMap((s) => s.commits.map((c) => c.oid)) ?? []).size;
+  const working = !!view?.sections.some((s) => s.includesWorking);
   const add = entries.reduce((n, e) => n + e.file.additions, 0);
   const del = entries.reduce((n, e) => n + e.file.deletions, 0);
   const toolbar = (
@@ -261,21 +265,20 @@ export function App() {
       </button>
       <span className="title" title={view?.title}>
         {view?.title ?? (target ? targetToHash(target) : "")}
+        {onBranches && <span className="dim"> · on {onBranches}</span>}
       </span>
       {view && (
         <span className="meta">
-          {commits > 0 && (
-            <span>
-              {commits} commit{commits === 1 ? "" : "s"}
+          {(commits > 0 || working) && (
+            <span className="m-text">
+              {commits > 0 && `${commits} commit${commits === 1 ? "" : "s"}`}
+              {working && `${commits > 0 ? " + " : ""}uncommitted`}
             </span>
           )}
-          <span>
+          <span className="m-text">
             {entries.length} file{entries.length === 1 ? "" : "s"}
           </span>
-          <span className="counts">
-            <span className="add">+{add}</span>
-            <span className="del">−{del}</span>
-          </span>
+          <Counts add={add} del={del} />
         </span>
       )}
       <span className="grow" />

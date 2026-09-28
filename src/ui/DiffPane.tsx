@@ -272,7 +272,9 @@ function SectionHead({ section: s }: { section: Section }) {
       </span>
       {s.replay && <Replay replay={s.replay} />}
       <span className="grow" />
-      <span className="dim">{s.files.length} files</span>
+      <span className="dim">
+        {s.files.length} file{s.files.length === 1 ? "" : "s"}
+      </span>
       <Counts add={add} del={del} />
     </div>
   );

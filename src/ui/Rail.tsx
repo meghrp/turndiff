@@ -58,7 +58,7 @@ function Row({
       role="button"
       tabIndex={0}
       className={`row ${className}${active ? " active" : ""}`}
-      style={{ paddingLeft: 10 + depth * 12 }}
+      style={{ paddingLeft: 10 + Math.min(depth, 8) * 12 }}
       title={title}
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onClick={onClick}

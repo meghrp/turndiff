@@ -38,6 +38,7 @@
   --diffs-bg-deletion-number-override: color-mix(in srgb, #10141c 86%, #f26d78);
   --diffs-bg-deletion-emphasis-override: #f26d7838;
   --diffs-bg-separator-override: #141821;
+  --diffs-bg-context-override: var(--bg-editor);
   --diffs-bg-hover-override: #161a24;
   --diffs-bg-selection-override: #e6b4501f;
   --diffs-bg-selection-number-override: #e6b45033;
@@ -131,6 +132,7 @@ select {
   background: var(--accent);
 }
 .pane {
+  container-type: inline-size;
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -545,6 +547,11 @@ select {
   color: var(--fg-dim);
   flex: none;
 }
+@container (max-width: 820px) {
+  .toolbar .meta .m-text {
+    display: none;
+  }
+}
 .rail-toggle {
   border-color: transparent;
 }
@@ -738,23 +745,30 @@ select {
   white-space: normal;
 }
 .comment {
-  padding: 6px 10px 8px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
   transition: background 300ms;
 }
 .comment.flash {
   background: #e6b45026;
 }
-.comment-head {
+.comment-actions {
+  flex: none;
   display: flex;
-  gap: 12px;
+  gap: 10px;
   font-size: 11px;
-  height: 18px;
-  align-items: center;
+  line-height: 18.6px;
+  opacity: 0;
 }
-.comment-head .link {
-  font-size: 11px;
+.comment:hover .comment-actions,
+.comment:focus-within .comment-actions {
+  opacity: 1;
 }
 .comment-body {
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
