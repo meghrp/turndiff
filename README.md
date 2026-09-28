@@ -13,6 +13,12 @@ A local review tool for stacked branches and the agents that write them. It read
 
 Turn and since-review views compare each branch with its own earlier self. If the agent switches from `feat-b` to `feat-a` mid-turn, commits on both and restacks, you see what `feat-a` gained and what `feat-b` gained, and nothing from the restack. Harness turn diffs compare two worktree snapshots instead, so a branch switch shows up as one branch deleting the other's code.
 
+## The UI
+
+The left rail lists the stack the way `git-spice ls` does, children above their parents and the trunk at the bottom. Click a branch for its PR view, expand it to click single commits, and shift-click a second commit or turn for a range. The rail also lists uncommitted changes, the entire stack, and the recorded agent turns. Below the stack sits the file list of the current view. Drag the rail's edge to resize it.
+
+Keyboard: `j`/`k` next and previous file, `v` toggle viewed, `u` unified or split, `r` reload after new changes, `/` filter files, `b` toggle the rail, `c` open the review panel, `?` list shortcuts. When the agent changes code while you review, a "new changes" pill appears; the view never reloads under you.
+
 ## Comments
 
 Select lines in the gutter to comment. A comment is attached to the exact file content it was written on (the blob id), so it appears in every view that shows that content: the branch view, the commit that last touched the file, the stack view. When the code under a comment changes, the comment is marked outdated and keeps its original snippet.
