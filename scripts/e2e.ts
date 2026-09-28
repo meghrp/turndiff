@@ -108,6 +108,14 @@ try {
   assert((await groupOf("feat-b: g needs a docstring")) === "feat-b", "after reload, the feat-b comment is listed under feat-b");
   await shot("review-panel");
 
+  await drawer.locator(".ritem", { hasText: "feat-a: name this list" }).click();
+  await page.waitForFunction(() => location.hash === "#branch/feat-a");
+  const target = page.locator(".comment", { hasText: "feat-a: name this list" });
+  await target.waitFor();
+  await page.waitForTimeout(800);
+  const box = (await target.boundingBox())!;
+  assert(box.y > 38 && box.y + box.height < 900, "clicking a comment in the panel opens its view and scrolls it into sight");
+
   const waiting = fetch(`${server.url}/api/wait?since=${Date.now()}`).then((r) => r.json() as Promise<WaitResponse>);
   await page.waitForFunction(async () => (await (await fetch("/api/state")).json()).agentWaiting === true);
   await drawer.locator(".summary").fill("Two small things.");
