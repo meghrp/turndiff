@@ -10,7 +10,7 @@
     "dev": "bun run src/cli.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "e2e": "bun scripts/ux-e2e.ts",
+    "e2e": "bun scripts/e2e.ts",
     "scenario": "bun scripts/scenario.ts"
   },
   "dependencies": {
