@@ -1,7 +1,8 @@
 // A scratch repo with a git-spice stack main <- feat-a <- feat-b <- feat-c and
-// one recorded agent turn that commits on feat-b, switches to feat-a and
+// two recorded agent turns. Turn 1 commits on feat-b, switches to feat-a and
 // commits there, pulls a new main, restacks everything, and ends on feat-b
-// with uncommitted work. Shared by the tests and `bun scripts/scenario.ts`.
+// with uncommitted work. Turn 2 creates feat-d on top of feat-c and returns to
+// feat-b. Shared by the tests and `bun scripts/scenario.ts`.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +11,12 @@ import { git } from "./git/exec.ts";
 import { recordHook } from "./git/snapshots.ts";
 
 export const SESSION = "sess-1";
+
+const STACK: [name: string, base: string, pr: number | null][] = [
+  ["feat-a", "main", null],
+  ["feat-b", "feat-a", 42],
+  ["feat-c", "feat-b", null],
+];
 
 export interface Scenario {
   root: string;
@@ -42,11 +49,7 @@ export async function buildScenario(dir?: string): Promise<Scenario> {
   await run("add", "-A");
   await run("commit", "-qm", "feat-c: add C");
   await run("checkout", "-q", "feat-b");
-  await writeSpice(root, [
-    ["feat-a", "main", null],
-    ["feat-b", "feat-a", 42],
-    ["feat-c", "feat-b", null],
-  ]);
+  await writeSpice(root, STACK);
   await put("notes.md", "scratch notes, untracked before the turn\n");
 
   await recordHook({ sessionId: SESSION, event: "UserPromptSubmit", cwd: root, prompt: "add g to feat-b, a3 to feat-a, then restack" });
@@ -66,6 +69,15 @@ export async function buildScenario(dir?: string): Promise<Scenario> {
   }
   await run("checkout", "-q", "feat-b");
   await put("feat_b.py", "def f():\n    return 1\n\ndef g():\n    return 2\n\ndef h():\n    return 3\n");
+  await recordHook({ sessionId: SESSION, event: "Stop", cwd: root });
+
+  await recordHook({ sessionId: SESSION, event: "UserPromptSubmit", cwd: root, prompt: "start feat-d on top of the stack" });
+  await run("checkout", "-q", "-b", "feat-d", "feat-c");
+  await put("feat_d.py", "D = 4\n");
+  await run("add", "feat_d.py");
+  await run("commit", "-qm", "feat-d: add D");
+  await writeSpice(root, [...STACK, ["feat-d", "feat-c", null]]);
+  await run("checkout", "-q", "feat-b");
   await recordHook({ sessionId: SESSION, event: "Stop", cwd: root });
 
   return { root, featACommit: await run("rev-parse", "feat-a") };

@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { git, repoPaths, type RepoPaths } from "./git/exec.ts";
 import { snapshotWorktree } from "./git/diff.ts";
 import { loadStack, repoVersion, type Stack } from "./git/stack.ts";
@@ -39,6 +41,7 @@ describe("stack", () => {
       ["feat-a", "main"],
       ["feat-b", "feat-a"],
       ["feat-c", "feat-b"],
+      ["feat-d", "feat-c"],
     ]);
     const featB = stack.branches.find((b) => b.name === "feat-b")!;
     expect(featB.commits.map((c) => [c.subject, c.branch])).toEqual([
@@ -109,6 +112,7 @@ describe("views", () => {
       ["feat-a", ["feat_a.py"]],
       ["feat-b", ["feat_b.py", "notes.md"]],
       ["feat-c", ["feat_c.py"]],
+      ["feat-d", ["feat_d.py"]],
     ]);
   });
 });
@@ -130,6 +134,47 @@ describe("turn comparison", () => {
     expect(b.includesWorking).toBe(true);
     expect(a.commits.map((c) => c.subject)).toEqual(["feat-a: add a3"]);
     expect(b.commits.map((c) => c.subject)).toEqual(["feat-b: add g"]);
+  });
+
+  test("a branch created during a turn shows its whole diff against its parent", async () => {
+    const v = await view({ kind: "turns", session: SESSION, from: 2, to: 2 });
+    expect(v.sections.map((s) => [s.title, paths_(s)])).toEqual([["feat-d (new branch)", ["feat_d.py"]]]);
+    expect(v.sections[0]!.commits.map((c) => c.subject)).toEqual(["feat-d: add D"]);
+  });
+
+  test("a turn range covers every branch touched across the turns", async () => {
+    const v = await view({ kind: "turns", session: SESSION, from: 1, to: 2 });
+    expect(v.title).toBe("Turns 1–2");
+    expect(v.sections.map((s) => s.branch)).toEqual(["feat-a", "feat-b", "feat-d"]);
+  });
+});
+
+describe("without git-spice", () => {
+  test("the checked-out branch is diffed against the default branch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "turndiff-plain-"));
+    try {
+      const run = (...args: string[]) => git(root, args);
+      await run("init", "-q", "-b", "main");
+      await run("config", "user.email", "dev@example.invalid");
+      await run("config", "user.name", "Dev");
+      await Bun.write(join(root, "x.txt"), "1\n");
+      await run("add", "-A");
+      await run("commit", "-qm", "base");
+      await run("checkout", "-qb", "topic");
+      await Bun.write(join(root, "x.txt"), "1\n2\n");
+      await run("commit", "-qam", "topic work");
+      const p = await repoPaths(root);
+      const s = await loadStack(p, []);
+      expect(s.spice).toBe(false);
+      expect(s.branches.map((b) => [b.name, b.parent, b.commits.length])).toEqual([
+        ["main", null, 1],
+        ["topic", "main", 1],
+      ]);
+      const v = await resolveView({ paths: p, stack: s, version: "", worktree: () => snapshotWorktree(p), lastReview: null, ignoreWhitespace: false }, { kind: "branch", branch: "topic", working: false });
+      expect(added(v.sections[0]!.files[0]!)).toEqual(["+2"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

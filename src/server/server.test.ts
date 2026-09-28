@@ -25,8 +25,8 @@ afterAll(async () => {
 
 test("state, views and the review round trip over HTTP", async () => {
   const state = await api<RepoState>("/api/state");
-  expect(state.branches.map((b) => b.name)).toEqual(["main", "feat-a", "feat-b", "feat-c"]);
-  expect(state.sessions.map((s) => [s.id, s.turns.length])).toEqual([[SESSION, 1]]);
+  expect(state.branches.map((b) => b.name)).toEqual(["main", "feat-a", "feat-b", "feat-c", "feat-d"]);
+  expect(state.sessions.map((s) => [s.id, s.turns.length])).toEqual([[SESSION, 2]]);
 
   const turn = await api<View>(`/api/view?t=${encodeURIComponent(targetToHash({ kind: "turns", session: SESSION, from: 1, to: 1 }))}`);
   expect(turn.sections.map((s) => s.branch)).toEqual(["feat-a", "feat-b"]);
