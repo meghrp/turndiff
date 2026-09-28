@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { Virtualizer } from "@pierre/diffs/react";
-import { viewedKey, type Comment, type ReviewState, type Section, type View } from "../model.ts";
+import { targetToHash, viewedKey, type Comment, type ReviewState, type Section, type View } from "../model.ts";
 import { commentsFor, indexComments } from "./lines.ts";
 import { Counts, FileCard, type CardActions, type ComposerState, type DisplayPrefs, type FileEntry } from "./FileCard.tsx";
 
@@ -39,9 +39,14 @@ export const DiffPane = forwardRef<
   const multi = view.sections.length > 1;
   const stickyTop = multi ? SECTION_HEAD : 0;
 
+  const shownTarget = useRef<string | null>(null);
   useEffect(() => {
     setComposer(null);
     setCollapseOverride(new Map());
+    // A new target starts at the top; reloading the same target keeps the reviewer's place.
+    const t = targetToHash(view.target);
+    if (shownTarget.current !== t && scroller.current) scroller.current.scrollTop = 0;
+    shownTarget.current = t;
   }, [view]);
 
   const index = useMemo(() => indexComments(review.comments), [review.comments]);
@@ -152,8 +157,14 @@ export const DiffPane = forwardRef<
           const el = card?.querySelector<HTMLElement>(`[data-comment="${CSS.escape(c.id)}"]`);
           if (el) {
             const s = scroller.current!;
-            const top = el.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop - s.clientHeight / 3;
-            s.scrollTo({ top: Math.max(0, top) });
+            // Cards above keep measuring after the first paint; re-aim until the position settles.
+            let settle = 0;
+            const aim = () => {
+              const top = el.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop - s.clientHeight / 3;
+              if (Math.abs(s.scrollTop - Math.max(0, top)) > 4) s.scrollTo({ top: Math.max(0, top) });
+              if (settle++ < 8) setTimeout(aim, 80);
+            };
+            aim();
             el.classList.add("flash");
             setTimeout(() => el.classList.remove("flash"), 1200);
           } else if (tries++ < 20) {
