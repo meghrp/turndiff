@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { git, gitOrNull, gitRaw, repoPaths, type RepoPaths } from "./exec.ts";
 import { diffTrees, snapshotWorktree, treeOf } from "./diff.ts";
-import { loadStack, logCommits, repoVersion, type Stack } from "./stack.ts";
+import { loadStack, logCommits, type Stack } from "./stack.ts";
 import type { Oid, Section, SessionSummary } from "../model.ts";
 
 export interface Snapshot {
@@ -70,9 +70,8 @@ export function snapshotOf(stack: Stack, worktree: Oid, id: string): Snapshot {
 
 export async function captureSnapshot(paths: RepoPaths, id: string): Promise<Snapshot> {
   const safe = sanitize(id);
-  const worktree = await snapshotWorktree(paths, `turndiff snapshot ${safe}`);
-  const { status } = await repoVersion(paths);
-  const snap = snapshotOf(await loadStack(paths, status), worktree, safe);
+  const [worktree, stack] = await Promise.all([snapshotWorktree(paths, `turndiff snapshot ${safe}`), loadStack(paths, [])]);
+  const snap = snapshotOf(stack, worktree, safe);
   // The ref keeps the worktree snapshot and its HEAD reachable across gc.
   await git(paths.root, ["update-ref", snapshotRef(safe), worktree]);
   await writeJson(snapshotFile(paths, safe), snap);

@@ -37,7 +37,11 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     return cached;
   };
   const worktreeFor = (version: string) => {
-    if (snapshot?.version !== version) snapshot = { version, oid: snapshotWorktree(paths) };
+    if (snapshot?.version !== version) {
+      const oid = snapshotWorktree(paths);
+      oid.catch(() => (snapshot = null));
+      snapshot = { version, oid };
+    }
     return snapshot.oid;
   };
 
@@ -111,6 +115,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
 
   const route = <T>(handler: (req: Bun.BunRequest<T & string>) => Promise<Response>) => async (req: Bun.BunRequest<T & string>) => {
     lastRequestAt = Date.now();
+    if (!sameOrigin(req, server.port!)) return json({ error: "cross-origin request refused" }, 403);
     try {
       return await handler(req);
     } catch (e) {
@@ -216,6 +221,18 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
 }
 
 class BadRequest extends Error {}
+
+/**
+ * Only this server's own page and the CLI may call the API. The Host check
+ * stops DNS rebinding; the Origin check stops other sites' pages from
+ * submitting or deleting comments with a simple cross-origin POST.
+ */
+function sameOrigin(req: Request, port: number): boolean {
+  const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
+  if (!allowed.includes(req.headers.get("host") ?? "")) return false;
+  const origin = req.headers.get("origin");
+  return origin === null || allowed.some((h) => origin === `http://${h}`);
+}
 
 function parseDecision(raw: unknown): Decision {
   if (typeof raw === "string" && (DECISIONS as readonly string[]).includes(raw)) return raw as Decision;

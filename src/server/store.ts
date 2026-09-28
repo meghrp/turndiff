@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git, type RepoPaths } from "../git/exec.ts";
 import type { Stack } from "../git/stack.ts";
-import type { Comment, Decision, Oid, ReviewState } from "../model.ts";
+import type { Comment, Decision, ReviewState } from "../model.ts";
 
 interface Stored {
   comments: Comment[];
@@ -98,29 +98,22 @@ function reviewFile(paths: RepoPaths): string {
 }
 
 /**
- * Comments whose new-side content is gone from their branch: from the worktree
- * for the checked-out branch, from the tip otherwise. Old-side anchors point
- * at removed code and never go stale.
+ * Comments whose new-side content is gone from their branch: neither at its tip
+ * nor, for the checked-out branch, on disk. Old-side anchors point at removed
+ * code and never go stale.
  */
 export async function outdatedComments(paths: RepoPaths, stack: Stack, comments: readonly Comment[]): Promise<Set<string>> {
   const tips = new Map(stack.branches.map((b) => [b.name, b.tip]));
-  const onDisk: Comment[] = [];
-  const inTree: { comment: Comment; tip: Oid }[] = [];
-  for (const c of comments) {
-    if (c.anchor.side === "old" || c.origin.branch === null) continue;
-    if (c.origin.branch === stack.worktree.branch) onDisk.push(c);
-    else if (tips.has(c.origin.branch)) inTree.push({ comment: c, tip: tips.get(c.origin.branch)! });
+  const live = comments.filter((c) => c.anchor.side === "new" && c.origin.branch !== null && tips.has(c.origin.branch));
+  const found = new Set<string>();
+  if (live.length > 0) {
+    const out = await git(paths.root, ["cat-file", "--batch-check=%(objectname)"], { stdin: live.map((c) => `${tips.get(c.origin.branch!)}:${c.anchor.path}`).join("\n") + "\n" });
+    out.split("\n").forEach((line, i) => line === live[i]!.anchor.blob && found.add(live[i]!.id));
   }
-  const stale = new Set<string>();
-  const present = onDisk.filter((c) => existsSync(join(paths.root, c.anchor.path)));
-  for (const c of onDisk) if (!present.includes(c)) stale.add(c.id);
-  if (present.length > 0) {
-    const out = await git(paths.root, ["hash-object", "--stdin-paths"], { stdin: present.map((c) => c.anchor.path).join("\n") + "\n" });
-    out.split("\n").forEach((oid, i) => oid !== present[i]!.anchor.blob && stale.add(present[i]!.id));
+  const onDisk = live.filter((c) => !found.has(c.id) && c.origin.branch === stack.worktree.branch && existsSync(join(paths.root, c.anchor.path)));
+  if (onDisk.length > 0) {
+    const out = await git(paths.root, ["hash-object", "--stdin-paths"], { stdin: onDisk.map((c) => c.anchor.path).join("\n") + "\n" });
+    out.split("\n").forEach((oid, i) => oid === onDisk[i]!.anchor.blob && found.add(onDisk[i]!.id));
   }
-  if (inTree.length > 0) {
-    const out = await git(paths.root, ["cat-file", "--batch-check=%(objectname)"], { stdin: inTree.map((e) => `${e.tip}:${e.comment.anchor.path}`).join("\n") + "\n" });
-    out.split("\n").forEach((line, i) => line.split(" ")[0] !== inTree[i]!.comment.anchor.blob && stale.add(inTree[i]!.comment.id));
-  }
-  return stale;
+  return new Set(live.filter((c) => !found.has(c.id)).map((c) => c.id));
 }

@@ -78,3 +78,10 @@ test("state, views and the review round trip over HTTP", async () => {
   expect(since2.sections.map((s) => [s.branch, s.files.map((f) => f.path)])).toEqual([["feat-b", ["feat_b.py"]]]);
   expect(await git(sc.root, ["status", "--porcelain"])).toContain("feat_b.py");
 });
+
+test("other sites' pages cannot call the API", async () => {
+  const res = await fetch(`${server.url}/api/submit`, { method: "POST", headers: { origin: "https://evil.example" }, body: JSON.stringify({ decision: "approve", summary: "" }) });
+  expect(res.status).toBe(403);
+  const own = await fetch(`${server.url}/api/review`, { headers: { origin: server.url } });
+  expect(own.status).toBe(200);
+});

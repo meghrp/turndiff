@@ -148,14 +148,18 @@ describe("review", () => {
     const store = await ReviewStore.open(paths);
     const featA = await git(sc.root, ["rev-parse", "feat-a:feat_a.py"]);
     const featB = await git(sc.root, ["rev-parse", "feat-b:feat_b.py"]);
+    const onDisk = await git(sc.root, ["hash-object", "feat_b.py"]);
+    const replaced = await git(sc.root, ["rev-parse", "feat-b~1:feat_b.py"]);
     await store.upsertComment(comment("c2", "feat-b", "feat_b.py", featB, 4));
     await store.upsertComment(comment("c1", "feat-a", "feat_a.py", featA, 3));
+    await store.upsertComment(comment("c3", "feat-b", "feat_b.py", onDisk, 7));
+    await store.upsertComment(comment("c4", "feat-b", "feat_b.py", replaced, 1));
 
     const reopened = await ReviewStore.open(paths);
     const state = await reopened.state(stack);
-    expect(state.comments.map((c) => c.id).sort()).toEqual(["c1", "c2"]);
-    // feat-b is checked out and feat_b.py has uncommitted edits, so its committed-content comment is stale.
-    expect(state.outdated).toEqual(["c2"]);
+    expect(state.comments.map((c) => c.id).sort()).toEqual(["c1", "c2", "c3", "c4"]);
+    // c2 matches feat-b's tip and c3 its uncommitted file; c4's content exists in neither.
+    expect(state.outdated).toEqual(["c4"]);
 
     const md = formatFeedback({
       decision: "request_changes",
