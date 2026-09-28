@@ -338,7 +338,7 @@ select {
   }
 }
 .rail-nav {
-  flex: 0 1 auto;
+  flex: none;
   max-height: 58%;
   overflow: auto;
   padding-bottom: 6px;
