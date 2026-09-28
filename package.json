@@ -1,7 +1,7 @@
 {
   "name": "turndiff",
   "version": "0.1.0",
-  "description": "Review agent turns and git-spice stack branches, one diff at a time, and send comments back to the agent.",
+  "description": "Review git-spice stacks, commits and agent turns in the browser, and send line comments back to the agent.",
   "type": "module",
   "bin": {
     "turndiff": "./bin/turndiff"
@@ -10,8 +10,8 @@
     "dev": "bun run src/cli.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "scenario": "bash scripts/scenario.sh",
-    "e2e": "bun scripts/ux-e2e.ts"
+    "e2e": "bun scripts/ux-e2e.ts",
+    "scenario": "bun scripts/scenario.ts"
   },
   "dependencies": {
     "@pierre/diffs": "^1.4.2",

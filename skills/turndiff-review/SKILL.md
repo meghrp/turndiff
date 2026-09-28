@@ -1,39 +1,33 @@
 ---
 name: turndiff-review
-description: Open turndiff's browser review of the current agent turn (or a git-spice branch) and act on the line comments the reviewer sends back. Use when the user says "review this turn", "let me review", "open turndiff", "send me the diff", "review the branch", or when you have finished a change and want a human to check it before continuing.
+description: Open turndiff's browser review of your work (the checked-out branch against its git-spice parent by default, or a commit, the whole stack, or an agent turn) and act on the line comments the reviewer sends back. Use when the user says "review this", "let me review", "open turndiff", "review the branch", "review the stack", "review this turn", or when you have finished a change and want a human to check it before continuing.
 ---
 
 # turndiff review
 
-turndiff shows the reviewer a diff that contains only your work: the current turn's changes (rebase and restack noise removed) or one branch of a git-spice stack against its parent. The reviewer leaves line comments and a decision in the browser; the CLI prints them as markdown.
+`turndiff review` opens the reviewer's browser on a diff of your work and blocks until they submit. Their comments come back on stdout as markdown, grouped by the branch each comment was written on.
 
 ## Run
 
-Default (latest turn, falls back to the current branch with uncommitted changes):
+Run it with the Bash tool at the maximum timeout (600000 ms). It waits up to 9 minutes.
 
 ```bash
-turndiff review
+turndiff review                  # checked-out branch against its parent, including uncommitted changes
+turndiff review --stack          # every branch of the stack, one section each
+turndiff review --turn           # what your latest turn changed, branch by branch
+turndiff review --branch <name>  # another branch of the stack
+turndiff review --commit <rev>   # one commit
 ```
 
-Other scopes:
-
-```bash
-turndiff review --branch                 # current branch vs its git-spice parent, committed only
-turndiff review --branch --worktree      # same, including uncommitted changes
-turndiff review --from 2 --to 4          # several turns cumulatively
-turndiff review --branch <name>          # another branch of the stack
-```
-
-Run it with the Bash tool at the maximum timeout (600000 ms). The command waits up to 9 minutes by default.
+If a review tab is already open, turndiff moves it to the requested view instead of opening another one.
 
 ## Read the result
 
-- **Feedback markdown** starting with `# Review feedback`: address every `### file:line` comment. The fenced snippet under each heading is the exact code the reviewer pointed at, so use it to locate the spot if the file has changed since. Then, if the decision was "Changes requested", run `turndiff review` again so the reviewer can re-check.
-- **`Still waiting for the reviewer`**: the reviewer has not submitted. The server is still up. Run `turndiff review` again to keep waiting. Do not start other work in the meantime unless the user asked you to.
-- **`Review cancelled`**: the reviewer closed the review without feedback. Ask what they want to do next.
+- **Markdown starting with `# Review feedback`.** Address every `### path:line` comment. Comments are listed under `## Branch <name>`. Fix each on that branch: check it out (`git-spice branch checkout <name>`), commit there, then restack the branches above it (`git-spice upstack restack`) before moving to the next branch. The fenced snippet is the exact code the reviewer pointed at, so use it to find the spot when a comment says the code has changed since. After addressing everything, run `turndiff review` again if the decision was "Changes requested".
+- **`Still waiting for the reviewer`.** The reviewer has not submitted yet and the server is still running. Run `turndiff review` again to keep waiting. Do not start other work in the meantime unless the user asked you to.
+- **`the review server stopped`.** Ask the user what they want to do next.
 
 ## Rules
 
-- Never fabricate feedback or assume approval when the command has not returned it.
-- Do not run `turndiff stop` unless the user asks; it discards the reviewer's open session.
-- The review server stays up across your tool calls. Re-running `turndiff review` reattaches, it does not open a second browser tab.
+- Never invent feedback, and never assume approval before the command returns it.
+- Do not run `turndiff stop` unless the user asks. The open review keeps its comments across restarts, but stopping closes the reviewer's tab connection.
