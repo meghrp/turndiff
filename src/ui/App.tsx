@@ -202,7 +202,7 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (el.closest("input, textarea, select, [contenteditable]")) return;
+      if (el.closest("textarea, select, [contenteditable], input:not([type=checkbox])")) return;
       const at = entries.findIndex((x) => x.key === activeKey);
       const handlers: Record<string, () => void> = {
         j: () => entries[at + 1] && scrollToFile(entries[at + 1]!),
@@ -222,6 +222,8 @@ export function App() {
       const h = handlers[e.key];
       if (h) {
         e.preventDefault();
+        // A clicked row or button would otherwise show a focus ring once a key is pressed.
+        if (el !== document.body) el.blur();
         h();
       }
     };
