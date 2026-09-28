@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, repoPaths, type RepoPaths } from "./git/exec.ts";
 import { diffTrees, snapshotWorktree } from "./git/diff.ts";
-import { captureSnapshot, compareSnapshots, loadSnapshot } from "./git/snapshots.ts";
+import { captureSnapshot, compareSnapshots, loadSnapshot, promptLabel } from "./git/snapshots.ts";
 import { loadStack, repoVersion, type Stack } from "./git/stack.ts";
 import { resolveView } from "./git/views.ts";
 import { buildScenario, SESSION, type Scenario } from "./scenario.ts";
@@ -345,3 +345,9 @@ async function writeSpiceFor(root: string, branches: [name: string, base: string
   const rootTree = await git(root, ["mktree"], { stdin: `100644 blob ${await blob({ trunk: "main" })}\trepo\n040000 tree ${tree}\tbranches\n` });
   await git(root, ["update-ref", "refs/spice/data", await git(root, ["commit-tree", rootTree, "-m", "spice"])]);
 }
+
+test("harness events get readable turn labels instead of their markup", () => {
+  expect(promptLabel('<task-notification>\n<task-id>x</task-id>\n<summary>Agent "Build UI" finished</summary>\n</task-notification>')).toBe('(background) Agent "Build UI" finished');
+  expect(promptLabel('<agent-message from="ui-builder">\n[Subagent hand-back] ...')).toBe("(message from ui-builder)");
+  expect(promptLabel("  add g to feat-b  ")).toBe("add g to feat-b");
+});

@@ -232,12 +232,26 @@ export async function listSessions(paths: RepoPaths): Promise<SessionRecord[]> {
   return all.sort((x, y) => (x.updatedAt < y.updatedAt ? 1 : -1));
 }
 
+/** Turns without a starting snapshot (hooks installed mid-turn) cannot be compared, so they are left out. */
 export function summarize(session: SessionRecord): SessionSummary {
   return {
     id: session.id,
     updatedAt: session.updatedAt,
-    turns: session.turns.map((t) => ({ n: t.n, prompt: t.prompt, startedAt: t.startedAt, endedAt: t.endedAt })),
+    turns: session.turns.filter((t) => t.pre !== null).map((t) => ({ n: t.n, prompt: t.prompt, startedAt: t.startedAt, endedAt: t.endedAt })),
   };
+}
+
+/**
+ * The harness also starts turns for its own events, such as a background task
+ * finishing or a subagent reporting back, with the event markup as the prompt.
+ */
+export function promptLabel(prompt: string): string {
+  const text = prompt.trim();
+  const summary = /<summary>([^<]*)<\/summary>/.exec(text)?.[1]?.trim();
+  if (text.startsWith("<task-notification>")) return summary ? `(background) ${summary}` : "(background task finished)";
+  const from = /^<agent-message from="([^"]*)"/.exec(text)?.[1];
+  if (from !== undefined) return `(message from ${from})`;
+  return text.slice(0, 500);
 }
 
 /** Snapshot ids bounding turns from..to; `post` is null while the last turn is running. */
@@ -285,7 +299,7 @@ export async function recordHook(input: HookInput): Promise<string> {
       last.post = pre.id;
       last.endedAt = now;
     }
-    session.turns.push({ n, prompt: input.prompt?.slice(0, 500) ?? null, pre: pre.id, post: null, startedAt: now, endedAt: null });
+    session.turns.push({ n, prompt: input.prompt === undefined ? null : promptLabel(input.prompt), pre: pre.id, post: null, startedAt: now, endedAt: null });
     await saveSession(paths, session);
     return `turn ${n}: captured pre`;
   }
