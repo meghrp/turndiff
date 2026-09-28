@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Comment, Decision, RepoState, ReviewState } from "../model.ts";
 import { api, copyText } from "./api.ts";
+import { stripPrefix } from "./stack.ts";
 
 const DECISIONS: { d: Decision; label: string }[] = [
   { d: "comment", label: "Comment" },
@@ -10,12 +11,14 @@ const DECISIONS: { d: Decision; label: string }[] = [
 
 export function ReviewPanel({
   repo,
+  prefix,
   review,
   onReview,
   onOpen,
   onClose,
 }: {
   repo: RepoState;
+  prefix: string;
   review: ReviewState;
   onReview(r: ReviewState): void;
   onOpen(c: Comment): void;
@@ -96,7 +99,9 @@ export function ReviewPanel({
         {keys.length === 0 && <div className="drawer-empty">No comments yet. Select lines in the gutter to comment.</div>}
         {keys.map((k) => (
           <div key={k ?? "(none)"} className="rgroup">
-            <div className="rgroup-title">{k ?? "detached"}</div>
+            <div className="rgroup-title" title={k ?? undefined}>
+              {k ? stripPrefix(k, prefix) : "detached"}
+            </div>
             {groups.get(k)!.map((c) => (
               <button key={c.id} className="ritem" onClick={() => onOpen(c)}>
                 <div className="ritem-head">

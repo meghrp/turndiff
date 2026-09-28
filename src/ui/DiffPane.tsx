@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { Virtualizer } from "@pierre/diffs/react";
 import { targetToHash, viewedKey, type Comment, type ReviewState, type Section, type View } from "../model.ts";
+import { Dimmed } from "./names.tsx";
 import { commentsFor, indexComments } from "./lines.ts";
 import { Counts, FileCard, type CardActions, type ComposerState, type DisplayPrefs, type FileEntry } from "./FileCard.tsx";
 
@@ -26,12 +27,13 @@ export const DiffPane = forwardRef<
     review: ReviewState;
     viewed: Set<string>;
     prefs: DisplayPrefs;
+    prefix: string;
     toolbar: ReactNode;
     busy: boolean;
     onActive(key: string | null): void;
     actions: Omit<CardActions, "toggleCollapsed" | "openComposer" | "closeComposer">;
   }
->(function DiffPane({ view, entries, review, viewed, prefs, toolbar, busy, onActive, actions }, ref) {
+>(function DiffPane({ view, entries, review, viewed, prefs, prefix, toolbar, busy, onActive, actions }, ref) {
   const [composer, setComposer] = useState<ComposerState | null>(null);
   const [collapseOverride, setCollapseOverride] = useState<Map<string, boolean>>(new Map());
   const cards = useRef(new Map<string, HTMLElement>());
@@ -185,7 +187,7 @@ export const DiffPane = forwardRef<
     body = view.sections.map((s) =>
       s.files.length === 0 && !multi ? null : (
         <div className="section" key={s.id}>
-          {multi && <SectionHead section={s} />}
+          {multi && <SectionHead section={s} prefix={prefix} />}
           {multi && s.files.length === 0 && <div className="card-note section-empty">No changes in this branch.</div>}
           {(bySection.get(s.id) ?? []).map((e) => (
             <FileCard
@@ -254,20 +256,31 @@ function useStableComments(entries: FileEntry[], index: Map<string, Comment[]>):
   }, [entries, index]);
 }
 
-function SectionHead({ section: s }: { section: Section }) {
+function SectionHead({ section: s, prefix }: { section: Section; prefix: string }) {
   const add = s.files.reduce((n, f) => n + f.additions, 0);
   const del = s.files.reduce((n, f) => n + f.deletions, 0);
   return (
     <div className="section-head">
       {s.branch && s.title.startsWith(s.branch) ? (
         <span>
-          <span className="branch-name">{s.branch}</span>
-          <span className="dim">{s.title.slice(s.branch.length)}</span>
+          <span className="branch-name">
+            <Dimmed text={s.branch} prefix={prefix} />
+          </span>
+          <span className="dim">
+            <Dimmed text={s.title.slice(s.branch.length)} prefix={prefix} />
+          </span>
         </span>
       ) : (
         <span>
-          <span className="branch-name">{s.branch ?? "detached"}</span>
-          {s.title !== s.branch && <span className="dim"> {s.title}</span>}
+          <span className="branch-name">
+            <Dimmed text={s.branch ?? "detached"} prefix={prefix} />
+          </span>
+          {s.title !== s.branch && (
+            <span className="dim">
+              {" "}
+              <Dimmed text={s.title} prefix={prefix} />
+            </span>
+          )}
         </span>
       )}
       <span className="dim" title={s.commits.map((c) => `${c.short} ${c.subject}`).join("\n")}>

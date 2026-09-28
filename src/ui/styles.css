@@ -627,6 +627,9 @@ select {
 .branch-name {
   color: var(--accent);
 }
+.prefix {
+  opacity: 0.55;
+}
 .replay {
   font-size: 10.5px;
   color: var(--fg-dim);

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hashToTarget, targetToHash, type Comment, type RepoState, type ReviewState, type Target, type View } from "../model.ts";
 import { api } from "./api.ts";
 import { usePref } from "./prefs.ts";
-import { defaultTarget, sameTarget } from "./stack.ts";
+import { defaultTarget, sameTarget, sharedPrefix } from "./stack.ts";
+import { Dimmed } from "./names.tsx";
 import { commentsFor, indexComments } from "./lines.ts";
 import { DiffPane, fileViewedKey, viewEntries, type DiffPaneHandle } from "./DiffPane.tsx";
 import { Rail } from "./Rail.tsx";
@@ -260,6 +261,7 @@ export function App() {
   }
 
   const stale = !!view && repo.version !== view.version;
+  const prefix = sharedPrefix(repo);
   const onBranches = view?.target.kind === "commits" ? [...new Set(view.sections.map((s) => s.branch ?? repo.trunk))].join(", ") : null;
   const commits = new Set(view?.sections.flatMap((s) => s.commits.map((c) => c.oid)) ?? []).size;
   const working = !!view?.sections.some((s) => s.includesWorking);
@@ -279,7 +281,7 @@ export function App() {
         </svg>
       </button>
       <span className="title" title={view?.title}>
-        {view?.title ?? (target ? targetToHash(target) : "")}
+        {view ? <Dimmed text={view.title} prefix={prefix} /> : target ? targetToHash(target) : ""}
         {onBranches && <span className="dim"> · on {onBranches}</span>}
       </span>
       {view && (
@@ -365,6 +367,7 @@ export function App() {
           review={review}
           viewed={viewed}
           prefs={{ diffStyle, wrap }}
+          prefix={prefix}
           toolbar={toolbar}
           busy={loading}
           onActive={setActiveKey}
@@ -389,7 +392,7 @@ export function App() {
         </main>
       )}
       {panel === "review" && (
-        <ReviewPanel repo={repo} review={review} onReview={setReview} onOpen={openComment} onClose={() => setPanel(null)} />
+        <ReviewPanel repo={repo} prefix={prefix} review={review} onReview={setReview} onOpen={openComment} onClose={() => setPanel(null)} />
       )}
       {panel === "help" && <Help onClose={() => setPanel(null)} />}
     </div>

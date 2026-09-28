@@ -79,3 +79,55 @@ export class CommitIndex {
     return this.cmp(from.commit.oid, c.commit.oid) <= 0 && this.cmp(c.commit.oid, to.commit.oid) <= 0;
   }
 }
+
+/** A `team/` style prefix every non-trunk branch shares, or "". */
+export function sharedPrefix(s: RepoState): string {
+  const names = s.branches.filter((b) => b.parent).map((b) => b.name);
+  if (names.length < 2) return "";
+  let p = names[0]!;
+  for (const n of names) while (!n.startsWith(p)) p = p.slice(0, -1);
+  return p.slice(0, p.lastIndexOf("/") + 1);
+}
+
+export const stripPrefix = (name: string, prefix: string) => (prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name);
+
+/** Branches the stack view covers; mirrors currentStack in src/git/stack.ts. */
+export function currentStack(s: RepoState): Set<string> {
+  const byName = new Map(s.branches.map((b) => [b.name, b]));
+  const nonTrunk = s.branches.filter((b) => b.parent !== null);
+  const current = s.branches.find((b) => b.current);
+  if (!current || current.parent === null) return new Set(nonTrunk.map((b) => b.name));
+  let root = current;
+  while (root.parent !== null && root.parent !== s.trunk) root = byName.get(root.parent)!;
+  const inStack = (b: Branch): boolean =>
+    b.name === root.name || (b.parent !== null && b.parent !== s.trunk && inStack(byName.get(b.parent)!));
+  return new Set(nonTrunk.filter(inStack).map((b) => b.name));
+}
+
+export type TreeItem =
+  | { kind: "branch"; branch: Branch; depth: number }
+  | { kind: "working"; depth: number }
+  | { kind: "commit"; commit: Commit; depth: number };
+
+/** Connector columns per rail row, like `gs ls`: a child's elbow runs down to its parent's glyph. */
+export interface Guides {
+  through: number[];
+  elbow: number | null;
+  stub: number | null;
+}
+
+export function treeGuides(items: TreeItem[]): Guides[] {
+  const guides: Guides[] = items.map(() => ({ through: [], elbow: null, stub: null }));
+  const at = new Map<string, number>();
+  items.forEach((it, i) => it.kind === "branch" && at.set(it.branch.name, i));
+  items.forEach((it, i) => {
+    if (it.kind !== "branch" || !it.branch.parent) return;
+    const j = at.get(it.branch.parent);
+    if (j === undefined || j <= i) return;
+    const col = items[j]!.depth;
+    guides[i]!.elbow = col;
+    for (let k = i + 1; k < j; k++) if (!guides[k]!.through.includes(col)) guides[k]!.through.push(col);
+    guides[j]!.stub = col;
+  });
+  return guides;
+}
