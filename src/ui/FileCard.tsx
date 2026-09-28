@@ -311,11 +311,16 @@ function CommentCard({
   const { anchor } = comment;
   return (
     <div className="comment" data-comment={comment.id} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="comment-head">
-        <span className="dim">
-          {pinned ? `${anchor.side === "old" ? "old " : ""}line ${anchor.start}${anchor.end !== anchor.start ? `–${anchor.end}` : ""}` : ""}
-        </span>
-        <span className="grow" />
+      <div className="comment-body">
+        {pinned && (
+          <span className="dim">
+            {anchor.side === "old" ? "old " : ""}line {anchor.start}
+            {anchor.end !== anchor.start ? `–${anchor.end}` : ""} ·{" "}
+          </span>
+        )}
+        {comment.body}
+      </div>
+      <div className="comment-actions">
         <button className="link" onClick={onEdit}>
           Edit
         </button>
@@ -323,7 +328,6 @@ function CommentCard({
           {confirm ? "Delete?" : "Delete"}
         </button>
       </div>
-      <div className="comment-body">{comment.body}</div>
     </div>
   );
 }
