@@ -14,13 +14,11 @@ const POLL_MS = 4000;
 const NARROW = 900;
 const LOADED_AT = Date.now();
 
-type Focus = { hash: string; at: number } | null;
-type Repo = RepoState & { focus?: Focus };
 
 const EMPTY_REVIEW: ReviewState = { comments: [], summary: "", viewed: [], outdated: [] };
 
 export function App() {
-  const [repo, setRepo] = useState<Repo | null>(null);
+  const [repo, setRepo] = useState<RepoState | null>(null);
   const [repoError, setRepoError] = useState<string | null>(null);
   const [target, setTarget] = useState<Target | null>(() => hashToTarget(location.hash));
   const [view, setView] = useState<View | null>(null);
