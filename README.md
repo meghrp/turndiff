@@ -17,7 +17,7 @@ Turn and since-review views compare each branch with its own earlier self. If th
 
 The left rail lists the stack the way `git-spice ls` does, children above their parents and the trunk at the bottom. Click a branch for its PR view, expand it to click single commits, and shift-click a second commit or turn for a range. The rail also lists uncommitted changes, the entire stack, and the recorded agent turns. Below the stack sits the file list of the current view. Drag the rail's edge to resize it.
 
-Keyboard: `j`/`k` next and previous file, `v` toggle viewed, `u` unified or split, `r` reload after new changes, `/` filter files, `b` toggle the rail, `c` open the review panel, `?` list shortcuts. When the agent changes code while you review, a "new changes" pill appears; the view never reloads under you.
+Keyboard: `j`/`k` next and previous file, `v` toggle viewed, `u` unified or split, `t` switch theme, `r` reload after new changes, `/` filter files, `b` toggle the rail, `c` open the review panel, `?` theme and shortcuts. Two themes ship, Ayu Dark and GitHub Dark, both taken from the Shiki themes that highlight the code. When the agent changes code while you review, a "new changes" pill appears; the view never reloads under you.
 
 ## Comments
 
