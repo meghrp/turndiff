@@ -7,6 +7,37 @@ description: Open turndiff's browser review of your work (the checked-out branch
 
 `turndiff review` opens the reviewer's browser on a diff of your work and waits until they submit. It then prints their comments as markdown, grouped by the branch each comment was written on, and exits.
 
+## Write a guide first
+
+When you have finished work on a branch, write a review guide for it before you start `turndiff review`. The reviewer reads it at the top of the branch and beside the code. Write one per branch: in a stack, run `turndiff guide` once for each branch you changed, each describing only that branch's diff.
+
+```bash
+turndiff guide - --branch <name> <<'EOF'
+{
+  "author": "<your model id>",
+  "intent": "Why the branch exists, in one or two sentences.",
+  "sections": [
+    { "title": "Retry on 429", "overview": "What changed, why, what it implies, where the risk is.",
+      "files": [{ "path": "src/client.ts", "summary": "Wraps fetch in a bounded retry." }] }
+  ],
+  "annotations": [
+    { "path": "src/client.ts", "lines": [40, 52], "summary": "Backoff caps at 8s.",
+      "rationale": "The upstream rate window is 10s; a longer wait would outlast the user's request." }
+  ]
+}
+EOF
+```
+
+`lines` are 1-based in the file as it is now; add `"side": "old"` to point at removed code. All text is markdown. `turndiff guide --help` has the full format.
+
+- Use 2 to 6 sections. Title each with a concept, never a filename.
+- Order sections by reading order: the heart of the change first, its consequences next, glue last.
+- Place every changed file in exactly one section.
+- Annotate only where a reviewer would not see the reason from the code itself, and make the rationale say why, not what.
+- Be honest about risk and uncertainty: name what you did not test and what you are unsure of.
+
+The command checks the guide against the branch diff. When it exits 1, fix every listed problem and run it again. Warnings about unplaced files mean a file still needs a section.
+
 ## Run it in the background
 
 Start it as a background command so the reviewer can take as long as they need. In Claude Code, call the Bash tool with `run_in_background: true`. The harness wakes you when the command exits, which is the moment the reviewer submits.
