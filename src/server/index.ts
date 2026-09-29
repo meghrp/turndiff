@@ -9,6 +9,7 @@ import { snapshotWorktree } from "../git/diff.ts";
 import { loadStack, repoVersion, type Stack } from "../git/stack.ts";
 import { captureSnapshot, listSessions, summarize } from "../git/snapshots.ts";
 import { resolveView, TargetError } from "../git/views.ts";
+import { guidesVersion, readGuides } from "../git/guides.ts";
 import { formatFeedback } from "../feedback.ts";
 import { outdatedComments, ReviewStore } from "./store.ts";
 import { hashToTarget, type Comment, type Decision, type RepoState, type SubmitResponse, type WaitResponse } from "../model.ts";
@@ -81,7 +82,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       agentWaiting: agentAttached(),
       focus,
       version,
-      guidesVersion: "",
+      guidesVersion: guidesVersion(paths),
     };
   }
 
@@ -187,6 +188,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
         return new Response(r.stdout, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "max-age=31536000, immutable" } });
       }),
       "/api/review": route(async () => json(await reviewState())),
+      "/api/guides": route(async () => json(await readGuides(paths))),
       "/api/comments/:id": {
         PUT: route(async (req) => {
           const comment = parseComment(await req.json(), (req.params as { id: string }).id);

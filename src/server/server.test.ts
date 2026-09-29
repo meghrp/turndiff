@@ -3,7 +3,8 @@ import { rm } from "node:fs/promises";
 import { git, repoPaths } from "../git/exec.ts";
 import { buildScenario, SESSION, type Scenario } from "../scenario.ts";
 import { startServer, type RunningServer } from "./index.ts";
-import { targetToHash, type Comment, type RepoState, type ReviewState, type SubmitResponse, type View, type WaitResponse } from "../model.ts";
+import { checkGuide, writeGuide } from "../git/guides.ts";
+import { targetToHash, type Comment, type Guide, type RepoState, type ReviewState, type SubmitResponse, type View, type WaitResponse } from "../model.ts";
 
 let sc: Scenario;
 let server: RunningServer;
@@ -133,4 +134,17 @@ test("after a server restart an older turndiff review cannot take over from a ne
   } finally {
     restarted.stop();
   }
+});
+
+test("/api/guides lists every stored guide, and RepoState.guidesVersion follows writes", async () => {
+  const paths = await repoPaths(sc.root);
+  expect(await api<Guide[]>("/api/guides")).toEqual([]);
+  const before = (await api<RepoState>("/api/state")).guidesVersion;
+  const r = await checkGuide(paths, "feat-c", { intent: "Add C.", sections: [{ title: "Constant", overview: "o", files: [{ path: "feat_c.py", summary: "s" }] }] });
+  if (!r.ok) throw new Error(r.errors.join("\n"));
+  await writeGuide(paths, r.guide);
+  expect((await api<RepoState>("/api/state")).guidesVersion).not.toBe(before);
+  const guides = await api<Guide[]>("/api/guides");
+  expect(guides.map((g) => [g.branch, g.intent, g.sections[0]!.files[0]!.blob])).toEqual([["feat-c", "Add C.", await git(sc.root, ["rev-parse", "feat-c:feat_c.py"])]]);
+  expect((await fetch(`${server.url}/api/guides`, { headers: { origin: "https://evil.example" } })).status).toBe(403);
 });
