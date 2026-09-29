@@ -54,7 +54,7 @@ test("state, views and the review round trip over HTTP", async () => {
   expect(afterPut.outdated).toEqual([]);
   expect((await fetch(`${server.url}/api/comments/k2`, { method: "PUT", body: JSON.stringify(comment) })).status).toBe(400);
 
-  const waiting = api<WaitResponse>("/api/wait");
+  const waiting = api<WaitResponse>("/api/wait?waiter=test");
   await Bun.sleep(100);
   expect((await api<RepoState>("/api/state")).agentWaiting).toBe(true);
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "request_changes", summary: "one nit" }) });
@@ -92,8 +92,19 @@ test("a review submitted while no agent waits reaches the next turndiff review o
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "approve", summary: "later" }) });
   expect(submitted.delivered).toBe(false);
   const started = Date.now();
-  const received = await api<WaitResponse>("/api/wait");
+  const received = await api<WaitResponse>("/api/wait?waiter=test");
   expect(Date.now() - started).toBeLessThan(1000);
   expect(received.markdown).toBe(submitted.markdown);
   expect(received.decision).toBe("approve");
+});
+
+test("a newer turndiff review takes over, so a submission wakes one agent", async () => {
+  const older = fetch(`${server.url}/api/wait?waiter=older`);
+  await Bun.sleep(100);
+  const newer = api<WaitResponse>("/api/wait?waiter=newer");
+  expect((await older).status).toBe(409);
+  expect((await fetch(`${server.url}/api/wait?waiter=older`)).status).toBe(409);
+  const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "comment", summary: "once" }) });
+  expect(submitted.delivered).toBe(true);
+  expect((await newer).markdown).toBe(submitted.markdown);
 });

@@ -133,7 +133,14 @@ export function ReviewPanel({
           rows={4}
           onChange={(e) => onSummary(e.target.value)}
         />
-        {status && <div className={`status-line ${status.kind}`}>{status.text}</div>}
+        {status ? (
+          <div className={`status-line ${status.kind}`}>{status.text}</div>
+        ) : (
+          <div className="status-line agent-line">
+            {repo.agentWaiting ? <span className="waiting" /> : null}
+            {repo.agentWaiting ? "An agent is waiting. Submitting wakes it with this review." : "No agent is waiting. Submitting copies the feedback, and the next turndiff review picks it up."}
+          </div>
+        )}
         <div className="decisions">
           {DECISIONS.map(({ d, label }) => (
             <button

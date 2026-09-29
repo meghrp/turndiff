@@ -58,7 +58,7 @@ export function formatFeedback(input: FeedbackInput): string {
           : "Fix each comment on the branch it is listed under, then rebase the branches stacked above it.",
       );
     }
-    out.push("When every comment is addressed, run `turndiff review` again so the reviewer can re-check.");
+    out.push("When every comment is addressed, start `turndiff review` in the background again so the reviewer can re-check.");
   }
   return out.join("\n") + "\n";
 }

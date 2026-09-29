@@ -5,11 +5,11 @@ description: Open turndiff's browser review of your work (the checked-out branch
 
 # turndiff review
 
-`turndiff review` opens the reviewer's browser on a diff of your work and blocks until they submit. Their comments come back on stdout as markdown, grouped by the branch each comment was written on.
+`turndiff review` opens the reviewer's browser on a diff of your work and waits until they submit. It then prints their comments as markdown, grouped by the branch each comment was written on, and exits.
 
-## Run
+## Run it in the background
 
-Run it with the Bash tool at the maximum timeout (600000 ms). It waits up to 9 minutes.
+Start it as a background command so the reviewer can take as long as they need. In Claude Code, call the Bash tool with `run_in_background: true`. The harness wakes you when the command exits, which is the moment the reviewer submits.
 
 ```bash
 turndiff review                  # checked-out branch against its parent, including uncommitted changes
@@ -19,12 +19,19 @@ turndiff review --branch <name>  # another branch of the stack
 turndiff review --commit <rev>   # one commit
 ```
 
-If a review tab is already open, turndiff moves it to the requested view instead of opening another one.
+Then tell the user the review is open and end your turn. Do not poll the command, sleep, or start other work while you wait unless the user asked for it.
+
+If a review tab is already open, turndiff moves it to the requested view instead of opening another one. Starting a new `turndiff review` retires any older one that is still waiting, so only the newest receives the feedback.
+
+If your harness cannot run background commands, run `turndiff review --timeout 540` in the foreground with a 10-minute tool timeout, and run it again each time it prints `Still waiting`.
 
 ## Read the result
 
-- **Markdown starting with `# Review feedback`.** Address every `### path:line` comment. Comments are listed under `## Branch <name>`. Fix each on that branch: check it out (`git-spice branch checkout <name>`), commit there, then restack the branches above it (`git-spice upstack restack`) before moving to the next branch. The fenced snippet is the exact code the reviewer pointed at, so use it to find the spot when a comment says the code has changed since. After addressing everything, run `turndiff review` again if the decision was "Changes requested".
-- **`Still waiting for the reviewer`.** The reviewer has not submitted yet and the server is still running. Run `turndiff review` again to keep waiting. Do not start other work in the meantime unless the user asked you to.
+When the command exits, read its full output.
+
+- **Markdown starting with `# Review feedback`.** Address every `### path:line` comment. Comments are listed under `## Branch <name>`. Fix each on that branch: check it out (`git-spice branch checkout <name>`), commit there, then restack the branches above it (`git-spice upstack restack`) before moving to the next branch. The fenced snippet is the exact code the reviewer pointed at, so use it to find the spot when a comment says the code has changed since. A comment that asks a question wants an answer in your reply, not necessarily a code change. When you are done, start `turndiff review` in the background again so the reviewer can re-check, unless the decision was "Approved".
+- **`Superseded`.** A newer `turndiff review` took over. Do nothing.
+- **`Still waiting for the reviewer`.** Only with `--timeout`. Run it again to keep waiting.
 - **`the review server stopped`.** Ask the user what they want to do next.
 
 ## Rules

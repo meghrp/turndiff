@@ -52,7 +52,7 @@ turndiff stop                  # stop this worktree's review server
 turndiff clean --keep 5        # drop old recorded agent sessions and any data left by v0
 ```
 
-Each worktree gets its own review server, started in the background on first use and reused after that. It restarts on its own port when turndiff's code changes, so an open tab reconnects. `turndiff review --branch feat-a` moves an already open tab to that branch instead of opening a second one. `turndiff review` waits up to 9 minutes (`--timeout`), which keeps it under Claude Code's 10-minute Bash limit. Run it again to keep waiting.
+Each worktree gets its own review server, started in the background on first use and reused after that. It restarts on its own port when turndiff's code changes, so an open tab reconnects. `turndiff review --branch feat-a` moves an already open tab to that branch instead of opening a second one. `turndiff review` waits until you submit. Agents run it as a background command, so the harness wakes them with your feedback when it exits. A newer `turndiff review` retires an older one that is still waiting, so one submission wakes one agent. Harnesses without background commands can pass `--timeout 540` and run it again on `Still waiting`.
 
 ## How turn comparison works
 

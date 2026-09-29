@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { git, gitOrNull, repoPaths, type RepoPaths } from "./git/exec.ts";
 import { deleteSession, listSessions, recordHook } from "./git/snapshots.ts";
 import { startServer } from "./server/index.ts";
-import { clearState, codeStamp, ensureDaemon, stopDaemon, writeState } from "./server/daemon.ts";
+import { clearState, codeStamp, ensureDaemon, readState, stopDaemon, writeState } from "./server/daemon.ts";
 import { targetToHash, type Target, type WaitResponse } from "./model.ts";
 
 const HELP = `turndiff: review stacked branches, commits and agent turns, send comments back to the agent
@@ -18,6 +18,7 @@ const HELP = `turndiff: review stacked branches, commits and agent turns, send c
 Usage:
   turndiff [open] [target]      Open the review UI for this worktree (starts the server if needed).
   turndiff review [target]      Open it, wait for the reviewer to submit, print the feedback markdown.
+                                Agents run it in the background; a newer review replaces an older waiting one.
                                 A bare branch name works as a target: turndiff review feat-a
   turndiff stop                 Stop this worktree's review server.
   turndiff hook                 Claude Code hook entrypoint (hook JSON on stdin).
@@ -35,7 +36,7 @@ Target (default: the checked-out branch against its parent):
   --since-review     What changed since the last submitted review.
 
 Options:
-  --timeout <sec>    review: stop waiting after this long (default 540, 0 = forever). The server keeps running.
+  --timeout <sec>    review: stop waiting after this long (default 0, wait until submitted). The server keeps running.
   --open / --no-open Force or suppress opening the browser.
   --port <n>         Port for a newly started server (default: random).
 `;
@@ -144,25 +145,49 @@ async function cmdOpen(args: Args, paths: RepoPaths): Promise<number> {
 }
 
 async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
-  const base = await present(args, paths);
-  // Stay under Claude Code's 10-minute Bash ceiling so the agent gets a clean "still waiting".
-  const timeoutMs = Number(str(args, "timeout") ?? 540) * 1000;
+  let base = await present(args, paths);
+  // The default waits until the reviewer submits. Agents run this in the
+  // background and the harness wakes them when it exits with the feedback.
+  const timeoutMs = Number(str(args, "timeout") ?? 0) * 1000;
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
+  const waiter = crypto.randomUUID();
+  process.stderr.write("turndiff: waiting for the reviewer to submit\n");
   while (Date.now() < deadline) {
     let res: Response;
     try {
-      res = await fetch(`${base}/api/wait`);
+      res = await fetch(`${base}/api/wait?waiter=${waiter}`);
     } catch {
-      process.stderr.write("turndiff: the review server stopped before feedback was submitted\n");
-      return 2;
+      // New turndiff code or a `turndiff` from another shell restarts the server; follow it.
+      const next = await reconnect(paths);
+      if (!next) {
+        process.stderr.write("turndiff: the review server stopped before feedback was submitted\n");
+        return 2;
+      }
+      base = next;
+      continue;
     }
     if (res.status === 200) {
       process.stdout.write(((await res.json()) as WaitResponse).markdown);
       return 0;
     }
+    if (res.status === 409) {
+      process.stdout.write("Superseded: a newer `turndiff review` is waiting for this review. Nothing to do here.\n");
+      return 0;
+    }
+    if (res.status !== 204) await Bun.sleep(1000);
   }
   process.stdout.write(`Still waiting for the reviewer at ${base}.\nThe review server keeps running. Run \`turndiff review\` again to keep waiting.\n`);
   return 0;
+}
+
+/** The URL of this worktree's server once it is answering again, or null after ~15s. */
+async function reconnect(paths: RepoPaths): Promise<string | null> {
+  for (let i = 0; i < 30; i++) {
+    await Bun.sleep(500);
+    const s = await readState(paths);
+    if (s && (await fetch(`${s.url}/api/presence`).then((r) => r.ok, () => false))) return s.url;
+  }
+  return null;
 }
 
 /** Internal: the foreground server that `ensureDaemon` spawns detached. */

@@ -47,12 +47,16 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     return snapshot.oid;
   };
 
-  const waiters = new Set<(r: WaitResponse) => void>();
+  // One `turndiff review` waits at a time. A newer one retires the older, so a
+  // submission wakes exactly one agent, and the one that asked last.
+  let waiter: { id: string; resolve(r: WaitResult): void } | null = null;
+  let newest: string | null = null;
+  const retired = new Set<string>();
   // A submission no waiter has taken yet. The CLI re-polls every WAIT_MS and the
   // agent re-runs `turndiff review` after a timeout; either gap must not lose it.
   let pending: (WaitResponse & { atMs: number }) | null = null;
   let lastWaitAt = 0;
-  const agentAttached = () => waiters.size > 0 || Date.now() - lastWaitAt < 3000;
+  const agentAttached = () => waiter !== null || Date.now() - lastWaitAt < 3000;
   let lastUiAt = 0;
   let lastRequestAt = Date.now();
   let focus: RepoState["focus"] = null;
@@ -100,28 +104,39 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     await store.submitted({ decision, markdown, snapshot: snap.id });
     const delivered = agentAttached();
     const submission = { decision, markdown, submittedAt: new Date().toISOString() };
-    if (waiters.size > 0) {
-      for (const resolve of waiters) resolve(submission);
-      waiters.clear();
+    if (waiter) {
+      waiter.resolve(submission);
+      waiter = null;
     } else pending = { ...submission, atMs: Date.now() };
     return { markdown, delivered };
   }
 
-  async function wait(): Promise<Response> {
+  async function wait(id: string): Promise<Response> {
+    if (retired.has(id)) return json({ error: "a newer turndiff review is waiting" }, 409);
+    if (newest !== id) {
+      if (newest) retired.add(newest);
+      waiter?.resolve("superseded");
+      newest = id;
+    }
+    // The same CLI re-polling after its own request was cut off.
+    waiter?.resolve(null);
     lastWaitAt = Date.now();
     if (pending && Date.now() - pending.atMs < PENDING_MS) {
       const { atMs: _, ...submission } = pending;
       pending = null;
       return json(submission);
     }
-    let resolveWait!: (r: WaitResponse) => void;
-    const submitted = new Promise<WaitResponse>((r) => (resolveWait = r));
-    waiters.add(resolveWait);
-    const timeout = Bun.sleep(WAIT_MS).then(() => null);
-    const result = await Promise.race([submitted, timeout]);
-    waiters.delete(resolveWait);
+    let resolveWait!: (r: WaitResult) => void;
+    const result = new Promise<WaitResult>((r) => (resolveWait = r));
+    const mine = { id, resolve: resolveWait };
+    waiter = mine;
+    const timer = setTimeout(() => resolveWait(null), WAIT_MS);
+    const r = await result;
+    clearTimeout(timer);
+    if (waiter === mine) waiter = null;
     lastWaitAt = Date.now();
-    return result ? json(result) : new Response(null, { status: 204 });
+    if (r === "superseded") return json({ error: "a newer turndiff review is waiting" }, 409);
+    return r ? json(r) : new Response(null, { status: 204 });
   }
 
   const route = <T>(handler: (req: Bun.BunRequest<T & string>) => Promise<Response>) => async (req: Bun.BunRequest<T & string>) => {
@@ -206,7 +221,11 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
           return json({ ok: true });
         }),
       },
-      "/api/wait": route(async () => wait()),
+      "/api/wait": route(async (req) => {
+        const id = new URL(req.url).searchParams.get("waiter");
+        if (!id) throw new BadRequest("expected ?waiter=<id>");
+        return wait(id);
+      }),
     },
     async fetch(req) {
       lastRequestAt = Date.now();
@@ -232,6 +251,8 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
 }
 
 class BadRequest extends Error {}
+
+type WaitResult = WaitResponse | "superseded" | null;
 
 /**
  * Only this server's own page and the CLI may call the API. The Host check

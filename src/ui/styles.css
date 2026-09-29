@@ -999,6 +999,12 @@ select {
 .status-line.ok {
   color: var(--add);
 }
+.agent-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+}
 .status-line.err {
   color: var(--error);
 }
