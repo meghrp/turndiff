@@ -305,6 +305,21 @@ try {
   );
   await page.setViewportSize({ width: 1440, height: 900 });
 
+  await page.locator(".row", { hasText: "entire stack" }).click();
+  await waitTitle(page, "Entire stack");
+  const railActive = async () => {
+    // Let the scroll tracker run after the jump.
+    await page.waitForTimeout(400);
+    return page.locator(".files .row.file.active .fname").evaluate((el) => el.firstChild?.textContent);
+  };
+  await page.locator(".files .row.file", { hasText: "feat_d.py" }).click();
+  const clamped = await page.locator(".scroller").evaluate((s) => s.scrollTop >= s.scrollHeight - s.clientHeight - 1);
+  assert(clamped && (await railActive()) === "feat_d.py", "a jump to the last file keeps it selected in the rail while the scroller is clamped");
+  await page.keyboard.press("k");
+  assert((await railActive()) === "feat_c.py", "k selects the previous file");
+  await page.keyboard.press("j");
+  assert((await railActive()) === "feat_d.py", "j onto the last file keeps it selected");
+
   assert(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   console.log(`\nall passed · screenshots in ${shots}`);
 } finally {

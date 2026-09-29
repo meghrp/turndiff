@@ -122,6 +122,15 @@ export const DiffPane = forwardRef<
     s.scrollTo({ top: Math.max(0, top) });
   };
 
+  /** A file the reviewer jumped to (rail, guide, j/k). */
+  const chosen = useRef<string | null>(null);
+  const jump = (key: string) => {
+    const el = cards.current.get(key);
+    if (!el) return;
+    chosen.current = key;
+    scrollTop(el);
+  };
+
   const activeRef = useRef<string | null>(null);
   const track = useCallback(() => {
     const s = scroller.current;
@@ -133,6 +142,16 @@ export const DiffPane = forwardRef<
       if (!el) continue;
       if (el.getBoundingClientRect().top <= edge) active = e.key;
       else break;
+    }
+    // A file near the end cannot scroll up to the edge. While the scroller is clamped at the bottom
+    // and that file is on screen, the jump the reviewer made wins over the file above it.
+    const pick = chosen.current;
+    if (pick) {
+      const r = cards.current.get(pick)?.getBoundingClientRect();
+      const view = s.getBoundingClientRect();
+      const clamped = s.scrollTop >= s.scrollHeight - s.clientHeight - 1;
+      if (r && clamped && r.bottom > view.top && r.top < view.bottom) active = pick;
+      else chosen.current = null;
     }
     if (active !== activeRef.current) {
       activeRef.current = active;
@@ -160,10 +179,7 @@ export const DiffPane = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      scrollToFile(key) {
-        const el = cards.current.get(key);
-        if (el) scrollTop(el);
-      },
+      scrollToFile: jump,
       scrollToComment(c) {
         const entry = entries.find((e) => (perEntry.get(e.key) ?? []).some((x) => x.id === c.id));
         if (!entry) return false;
@@ -237,13 +253,14 @@ export const DiffPane = forwardRef<
     [entries, perEntry, stickyTop, collapseOverride, viewed],
   );
 
+  const jumpRef = useRef(jump);
+  jumpRef.current = jump;
   const onGuideFile = useCallback(
     (e: FileEntry) => {
-      const el = cards.current.get(e.key);
-      if (el) scrollTop(el);
+      jumpRef.current(e.key);
       onActive(e.key);
     },
-    [onActive, stickyTop],
+    [onActive],
   );
 
   let body: ReactNode;
