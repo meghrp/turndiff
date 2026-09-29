@@ -35,19 +35,22 @@ export async function ensureUiBuilt(opts: { force?: boolean; log?: (msg: string)
   await rm(OUT_DIR, { recursive: true, force: true });
   // Bundle the script entry only. Bun's HTML entrypoints mis-link the script
   // tag when code splitting is on, so the HTML shell is written by hand below.
-  const result = await Bun.build({
-    entrypoints: [join(UI_SRC, "main.tsx")],
-    outdir: OUT_DIR,
-    target: "browser",
-    minify: true,
-    sourcemap: "none",
-    splitting: true,
-    naming: { chunk: "chunks/[name]-[hash].[ext]", asset: "assets/[name]-[hash].[ext]", entry: "[name]-[hash].[ext]" },
-  });
-  if (!result.success) {
-    const msgs = result.logs.map((l) => l.message).join("\n");
-    throw new Error(`UI build failed:\n${msgs}`);
+  let result: Bun.BuildOutput;
+  try {
+    result = await Bun.build({
+      entrypoints: [join(UI_SRC, "main.tsx")],
+      outdir: OUT_DIR,
+      target: "browser",
+      minify: true,
+      sourcemap: "none",
+      splitting: true,
+      naming: { chunk: "chunks/[name]-[hash].[ext]", asset: "assets/[name]-[hash].[ext]", entry: "[name]-[hash].[ext]" },
+    });
+  } catch (e) {
+    // Bun.build throws an AggregateError whose message is only "Bundle failed"; the causes are in .errors.
+    throw buildError((e as AggregateError).errors ?? [e]);
   }
+  if (!result.success) throw buildError(result.logs);
   const entry = result.outputs.find((o) => o.kind === "entry-point");
   if (!entry) throw new Error("UI build produced no entry point");
   const entryHref = "/" + relative(OUT_DIR, entry.path);
@@ -93,4 +96,11 @@ export function serveAsset(outDir: string, pathname: string): Response | null {
   return new Response(Bun.file(file), {
     headers: { "content-type": type, "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache" },
   });
+}
+
+function buildError(causes: { message: string }[]): Error {
+  const msgs = causes.map((c) => c.message).join("\n");
+  // The running server's resolver keeps the failed lookup, so it needs a restart after the install.
+  const hint = /Could not resolve/.test(msgs) ? `\nRun \`bun install\` in ${PKG_ROOT}, then \`turndiff stop\` and open turndiff again.` : "";
+  return new Error(`UI build failed:\n${msgs}${hint}`);
 }
