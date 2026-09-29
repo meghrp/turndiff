@@ -22,7 +22,7 @@ Usage:
   turndiff stop                 Stop this worktree's review server.
   turndiff hook                 Claude Code hook entrypoint (hook JSON on stdin).
   turndiff install [--skill-only]  Register the hooks in ~/.claude/settings.json and link the skill.
-  turndiff clean [--keep <n> | --all]  Drop recorded agent sessions (default keeps the newest 5).
+  turndiff clean [--keep <n> | --all]  Drop recorded agent sessions (default keeps the newest 5) and any v0 data.
 
 Target (default: the checked-out branch against its parent):
   --branch [name]    A branch against its parent, like a PR.
@@ -211,14 +211,12 @@ async function cmdClean(args: Args, paths: RepoPaths): Promise<number> {
     await deleteSession(paths, s);
     process.stdout.write(`removed session ${s.id} (${s.turns.length} turns)\n`);
   }
-  if (args.flags.has("all")) {
-    // v0 left whole-worktree checkpoints and per-scope drafts behind.
-    const legacy = ((await gitOrNull(paths.root, ["for-each-ref", "--format=%(refname)", "refs/turndiff/"])) ?? "").split("\n").filter((r) => r && !r.startsWith("refs/turndiff/v1/"));
-    for (const ref of legacy) await git(paths.root, ["update-ref", "-d", ref]);
-    for (const dir of ["sessions", "drafts", "review"]) await rm(join(paths.commonDir, "turndiff", dir), { recursive: true, force: true });
-    if (legacy.length > 0) process.stdout.write(`removed ${legacy.length} v0 checkpoint refs\n`);
-  }
-  if (targets.length === 0) process.stdout.write("no sessions to remove\n");
+  // v0's whole-worktree checkpoints and per-scope drafts mean nothing to this version.
+  const legacy = ((await gitOrNull(paths.root, ["for-each-ref", "--format=%(refname)", "refs/turndiff/"])) ?? "").split("\n").filter((r) => r && !r.startsWith("refs/turndiff/v1/"));
+  if (legacy.length > 0) await git(paths.root, ["update-ref", "--stdin"], { stdin: legacy.map((r) => `delete ${r}\n`).join("") });
+  for (const dir of ["sessions", "drafts", "review"]) await rm(join(paths.commonDir, "turndiff", dir), { recursive: true, force: true });
+  if (legacy.length > 0) process.stdout.write(`removed ${legacy.length} v0 checkpoint refs and v0 drafts\n`);
+  if (targets.length === 0 && legacy.length === 0) process.stdout.write("nothing to remove\n");
   return 0;
 }
 

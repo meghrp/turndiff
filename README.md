@@ -43,7 +43,7 @@ turndiff --stack               # or pick a starting view: --branch [name], --com
 turndiff --range main..feat-b  #   --range <a>..<b>, --working, --turn [n], --turns 2-4, --since-review
 turndiff review                # open the UI, wait for the review, print it (what the agent runs)
 turndiff stop                  # stop this worktree's review server
-turndiff clean --keep 5        # drop old recorded agent sessions; --all also removes v0 data
+turndiff clean --keep 5        # drop old recorded agent sessions and any data left by v0
 ```
 
 Each worktree gets its own review server, started in the background on first use and reused after that. It restarts on its own port when turndiff's code changes, so an open tab reconnects. `turndiff review --branch feat-a` moves an already open tab to that branch instead of opening a second one. `turndiff review` waits up to 9 minutes (`--timeout`), which keeps it under Claude Code's 10-minute Bash limit. Run it again to keep waiting.
