@@ -267,6 +267,44 @@ try {
   assert((await page.locator(".note").count()) === 0, "a note on changed code no longer renders in the diff");
   await shot("guide-stale");
 
+  const long = Array.from({ length: 70 }, (_, i) => `long ${i + 1}${[10, 30, 50].includes(i + 1) ? " changed" : ""}`).join("\n") + "\n";
+  await writeFile(join(root, "long.txt"), long);
+  const replaced = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "cli.ts"), "guide"], {
+    cwd: root,
+    stdin: new Response(JSON.stringify({ ...guideInput, annotations: [{ path: "long.txt", lines: [5, 5], summary: "Line 5 is unchanged context." }] })),
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  assert((await replaced.exited) === 0, "a second turndiff guide replaces the first");
+  await page.locator(".pill").waitFor({ timeout: 15_000 });
+  await page.keyboard.press("r");
+  const longCard = page.locator(".card", { has: page.locator(".card-head .path", { hasText: "long.txt" }) });
+  const pinned = longCard.locator(".note");
+  await pinned.waitFor({ timeout: 15_000 });
+  assert((await pinned.innerText()).includes("line 5"), "a note on an unrendered line is pinned to the top of its file");
+  await pinned.getByRole("button", { name: "Reply" }).click();
+  const pinnedReply = longCard.locator(".composer textarea");
+  await pinnedReply.waitFor({ state: "visible", timeout: 3000 });
+  assert((await pinnedReply.getAttribute("placeholder")) === "Comment on line 5", "Reply to a pinned note opens a visible composer on the note's line");
+  await pinnedReply.press("Escape");
+
+  const onBg = await page.locator(".guide-head .toggle.on").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  assert(onBg !== "rgba(0, 0, 0, 0)", `an "on" toggle has the soft accent tint (${onBg})`);
+
+  await page.setViewportSize({ width: 1440, height: 1400 });
+  await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
+  const steps: string[] = [];
+  for (const key of ["]", "]", "]", "]", "]", "["]) {
+    await page.keyboard.press(key);
+    await page.locator(".hunk-mark").waitFor({ state: "attached" });
+    steps.push(await page.locator(".hunk-mark").evaluate((m) => `${m.closest(".card")!.querySelector(".card-head .path")!.textContent} ${(m as HTMLElement).dataset.hunk}`));
+  }
+  assert(
+    JSON.stringify(steps.slice(2)) === JSON.stringify(["long.txt old:10", "long.txt old:30", "long.txt old:50", "long.txt old:30"]),
+    `] reaches every hunk of the last file even when it cannot scroll further, and [ steps back (${steps.join(", ")})`,
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+
   assert(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   console.log(`\nall passed · screenshots in ${shots}`);
 } finally {

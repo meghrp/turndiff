@@ -34,6 +34,8 @@ export async function buildScenario(dir?: string): Promise<Scenario> {
   await run("config", "user.name", "Dev");
   await put("a.txt", "line1\nline2\nline3\n");
   await put("b.txt", "base\n");
+  // Long enough that an edit in it leaves unrendered lines between hunks.
+  await put("long.txt", Array.from({ length: 70 }, (_, i) => `long ${i + 1}`).join("\n") + "\n");
   await run("add", "-A");
   await run("commit", "-qm", "c1");
   // origin never has to exist: only origin/main and main's upstream config matter.

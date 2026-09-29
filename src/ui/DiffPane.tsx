@@ -43,6 +43,7 @@ export const DiffPane = forwardRef<
   const [collapseOverride, setCollapseOverride] = useState<Map<string, boolean>>(new Map());
   const cards = useRef(new Map<string, HTMLElement>());
   const scroller = useRef<HTMLElement | null>(null);
+  const hunkNav = useRef<{ mark: HTMLElement | null; seek: number; current: { key: string; index: number; scrollTop: number } | null }>({ mark: null, seek: 0, current: null });
   const multi = view.sections.length > 1;
   const stickyTop = multi ? SECTION_HEAD : 0;
 
@@ -50,6 +51,7 @@ export const DiffPane = forwardRef<
   useEffect(() => {
     setComposer(null);
     setCollapseOverride(new Map());
+    hunkNav.current.current = null;
     // A new target starts at the top; reloading the same target keeps the reviewer's place.
     const t = targetToHash(view.target);
     if (shownTarget.current !== t && scroller.current) scroller.current.scrollTop = 0;
@@ -154,7 +156,6 @@ export const DiffPane = forwardRef<
     };
   }, [track]);
 
-  const hunkNav = useRef<{ mark: HTMLElement | null; seek: number }>({ mark: null, seek: 0 });
 
   useImperativeHandle(
     ref,
@@ -201,13 +202,22 @@ export const DiffPane = forwardRef<
           const card = cards.current.get(entry.key);
           return card && !isCollapsed(entry) ? hunksOf(entry.file).map((h) => ({ entry, card, h })) : [];
         });
-        const ys = list.map(({ card, h }) => hunkY(card, h));
-        const at = dir === 1 ? ys.findIndex((y) => y > lead + 2) : ys.findLastIndex((y) => y < lead - 2);
+        // Near the ends of the scroll range a hunk cannot reach `lead`, so position alone would find the
+        // same hunk again. Step from the last hunk reached while the reviewer has not scrolled since.
+        const cur = hunkNav.current.current;
+        const from = cur && Math.abs(s.scrollTop - cur.scrollTop) < 1 ? list.findIndex((x) => x.entry.key === cur.key && x.h.index === cur.index) : -1;
+        const ys = from >= 0 ? [] : list.map(({ card, h }) => hunkY(card, h));
+        const at = from >= 0 ? from + dir : dir === 1 ? ys.findIndex((y) => y > lead + 2) : ys.findLastIndex((y) => y < lead - 2);
         const next = list[at];
         if (!next) return;
         const seek = ++hunkNav.current.seek;
         hunkNav.current.mark?.remove();
         hunkNav.current.mark = null;
+        hunkNav.current.current = null;
+        const reached = (row: HTMLElement) => {
+          hunkNav.current.mark = markHunk(next.card, row, next.h);
+          hunkNav.current.current = { key: next.entry.key, index: next.h.index, scrollTop: s.scrollTop };
+        };
         let tries = 0;
         // Rows far from the viewport are not rendered yet: scroll to an estimate, then re-aim at the real row.
         let last = -1;
@@ -216,7 +226,7 @@ export const DiffPane = forwardRef<
           const row = hunkRow(next.card, next.h);
           const y = row ? row.getBoundingClientRect().top : hunkY(next.card, next.h);
           // Settled: on target, or pinned against the top or bottom of the scroll range.
-          if (row && (Math.abs(y - lead) <= 2 || s.scrollTop === last)) return void (hunkNav.current.mark = markHunk(next.card, row));
+          if (row && (Math.abs(y - lead) <= 2 || s.scrollTop === last)) return reached(row);
           last = s.scrollTop;
           s.scrollTo({ top: Math.max(0, s.scrollTop + y - lead) });
           if (tries++ < 12) requestAnimationFrame(() => setTimeout(aim, 40));
@@ -321,11 +331,12 @@ function hunkY(card: HTMLElement, h: HunkStart): number {
 }
 
 /** A short-lived accent bar beside the hunk's first block of changed rows. */
-function markHunk(card: HTMLElement, row: HTMLElement): HTMLElement {
+function markHunk(card: HTMLElement, row: HTMLElement, h: HunkStart): HTMLElement {
   let height = 0;
   for (let r: Element | null = row; r?.getAttribute("data-line-type")?.startsWith("change"); r = r.nextElementSibling) height += r.getBoundingClientRect().height;
   const mark = document.createElement("div");
   mark.className = "hunk-mark";
+  mark.dataset.hunk = `${h.side}:${h.line}`;
   mark.style.top = `${row.getBoundingClientRect().top - card.getBoundingClientRect().top}px`;
   mark.style.height = `${height}px`;
   card.appendChild(mark);

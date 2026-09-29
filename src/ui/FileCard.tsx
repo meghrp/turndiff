@@ -155,7 +155,11 @@ export const FileCard = memo(function FileCard({
         metadata: { kind: "comment", comment: c },
       }));
     for (const n of notes) out.push({ side: toPierreSide(n.anchor.side), lineNumber: noteLine(fd, n.anchor), metadata: { kind: "note", note: n } });
-    if (composer) out.push({ side: toPierreSide(composer.anchor.side), lineNumber: composer.anchor.end, metadata: { kind: "composer" } });
+    // A reply to a note outside the hunks has no rendered line to hang on; pin it to the top, like the note.
+    if (composer) {
+      const { side, end } = composer.anchor;
+      out.push({ side: toPierreSide(side), lineNumber: lineInHunks(fd, side, end) ? end : 0, metadata: { kind: "composer" } });
+    }
     return out;
   }, [fd, comments, notes, composer]);
 
