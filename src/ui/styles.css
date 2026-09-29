@@ -1137,13 +1137,21 @@ kbd {
   color: var(--fg);
   margin-bottom: 4px;
 }
+/* Section rows share columns, so the counts line up whatever the title length. */
 .guide-groups {
   margin: 8px 0 0 -22px;
+  display: grid;
+  grid-template-columns: 16px fit-content(40ch) 4.5em 6.5em minmax(0, 1fr);
+  column-gap: 10px;
+}
+.guide-group {
+  display: contents;
 }
 .guide-group-row {
-  display: flex;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 10px;
   padding: 2px 4px;
   border-radius: 3px;
   cursor: pointer;
@@ -1151,14 +1159,23 @@ kbd {
 .guide-group-row:hover {
   background: var(--hover);
 }
+.guide-group-row .tag {
+  justify-self: start;
+  margin-left: 0;
+}
 .guide-group-title {
   color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .guide-count {
   color: var(--dim);
   font-size: 11px;
+  white-space: nowrap;
 }
 .guide-group-body {
+  grid-column: 1 / -1;
   padding: 2px 0 8px 26px;
 }
 .guide-overview {
@@ -1234,7 +1251,8 @@ kbd {
   font-size: 12px;
 }
 .group-head-overview {
-  max-width: 72ch;
+  max-width: 100ch;
+  line-height: 1.55;
   margin-top: 2px;
   font-size: 12.5px;
 }

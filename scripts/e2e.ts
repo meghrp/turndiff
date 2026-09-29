@@ -305,6 +305,8 @@ try {
   await pinned.waitFor({ timeout: 15_000 });
   const rows = () => guideCard.locator(".guide-group-row").evaluateAll((els) => els.map((e) => e.textContent));
   assert(JSON.stringify(await rows()) === JSON.stringify(["Scratch notes1 file0/1 viewed", "New functions1 file0/1 viewed", "Extras1 file0/1 viewed", "Everything else1 file0/1 viewed"]), `the unplaced file gets an "Everything else" row (${await rows()})`);
+  const countX = await guideCard.locator(".guide-group-row").evaluateAll((rows) => rows.map((r) => [...r.querySelectorAll(".guide-count")].map((c) => Math.round(c.getBoundingClientRect().left)).join(",")));
+  assert(new Set(countX).size === 1, `section rows line up their counts whatever the title length (${countX.join(" | ")})`);
   const heads = await page.locator(".group-head .group-head-title").allInnerTexts();
   assert(JSON.stringify(heads) === JSON.stringify(["Scratch notes", "New functions", "Extras", "Everything else"]) && JSON.stringify(await paneOrder()) === JSON.stringify(["notes.md", "feat_b.py", "extra.txt", "long.txt"]), "the unplaced file comes last, under an Everything else header");
   assert((await page.locator(".files .file-subgroup").last().innerText()) === "Everything else", "the rail groups it under Everything else too");
