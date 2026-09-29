@@ -35,7 +35,6 @@ export const GuideCard = memo(function GuideCard({
   onFile,
 }: {
   guide: Guide;
-  /** The section's files. */
   entries: FileEntry[];
   viewed: Set<string>;
   controls: GuideControls;
