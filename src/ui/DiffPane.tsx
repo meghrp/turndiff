@@ -1,23 +1,25 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { Virtualizer } from "@pierre/diffs/react";
-import { targetToHash, viewedKey, type Comment, type ReviewState, type Section, type View } from "../model.ts";
+import { targetToHash, type Comment, type FileChange, type Guide, type ReviewState, type Section, type View } from "../model.ts";
 import { Dimmed } from "./names.tsx";
-import { commentsFor, indexComments } from "./lines.ts";
-import { Counts, FileCard, type CardActions, type ComposerState, type DisplayPrefs, type FileEntry } from "./FileCard.tsx";
+import { anchoredTo, indexAnchored } from "./lines.ts";
+import { guideFor, patchHunks, type HunkStart, type Note } from "./guides.ts";
+import { GuideCard, type GuideControls } from "./GuideCard.tsx";
+import { Counts, FileCard, fileViewedKey, type CardActions, type ComposerState, type DisplayPrefs, type FileEntry } from "./FileCard.tsx";
 
 export interface DiffPaneHandle {
   scrollToFile(key: string): void;
   /** Scrolls to the first card showing this comment; false when none does. */
   scrollToComment(c: Comment): boolean;
-}
-
-export const fileViewedKey = (e: FileEntry) => viewedKey(e.file.path, e.file.newBlob ?? e.file.oldBlob ?? "");
-
-export function viewEntries(view: View): FileEntry[] {
-  return view.sections.flatMap((section) => section.files.map((file) => ({ key: `${section.id}\0${file.path}`, section, file })));
+  /** Scrolls the next (1) or previous (-1) hunk of an expanded file, in view order, near the top. */
+  stepHunk(dir: 1 | -1): void;
 }
 
 const SECTION_HEAD = 30;
+const CARD_HEAD = 34;
+/** Rows of context left visible above a hunk that `[`/`]` scrolls to. */
+const HUNK_LEAD = 3;
+const LINE_PX = 19;
 
 export const DiffPane = forwardRef<
   DiffPaneHandle,
@@ -26,6 +28,9 @@ export const DiffPane = forwardRef<
     entries: FileEntry[];
     review: ReviewState;
     viewed: Set<string>;
+    guides: Map<string, Guide>;
+    notes: Map<string, Note[]> | null;
+    guideControls: GuideControls;
     prefs: DisplayPrefs;
     prefix: string;
     toolbar: ReactNode;
@@ -33,7 +38,7 @@ export const DiffPane = forwardRef<
     onActive(key: string | null): void;
     actions: Omit<CardActions, "toggleCollapsed" | "openComposer" | "closeComposer">;
   }
->(function DiffPane({ view, entries, review, viewed, prefs, prefix, toolbar, busy, onActive, actions }, ref) {
+>(function DiffPane({ view, entries, review, viewed, guides, notes, guideControls, prefs, prefix, toolbar, busy, onActive, actions }, ref) {
   const [composer, setComposer] = useState<ComposerState | null>(null);
   const [collapseOverride, setCollapseOverride] = useState<Map<string, boolean>>(new Map());
   const cards = useRef(new Map<string, HTMLElement>());
@@ -51,13 +56,22 @@ export const DiffPane = forwardRef<
     shownTarget.current = t;
   }, [view]);
 
-  const index = useMemo(() => indexComments(review.comments), [review.comments]);
+  const index = useMemo(() => indexAnchored(review.comments), [review.comments]);
   const bySection = useMemo(() => {
     const m = new Map<string, FileEntry[]>();
     for (const e of entries) m.set(e.section.id, [...(m.get(e.section.id) ?? []), e]);
     return m;
   }, [entries]);
-  const perEntry = useStableComments(entries, index);
+  const perEntry = useStableAnchored(entries, index);
+  const perEntryNotes = useStableAnchored(entries, notes ?? NO_NOTES);
+  const summaries = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of view.sections) {
+      const g = guideFor(view, s, guides);
+      for (const f of g?.sections.flatMap((x) => x.files) ?? []) m.set(`${s.id}\0${f.path}`, f.summary);
+    }
+    return m;
+  }, [view, guides]);
   const isCollapsed = (e: FileEntry) => collapseOverride.get(e.key) ?? viewed.has(fileViewedKey(e));
 
   const viewedNow = useRef(viewed);
@@ -140,6 +154,8 @@ export const DiffPane = forwardRef<
     };
   }, [track]);
 
+  const hunkNav = useRef<{ mark: HTMLElement | null; seek: number }>({ mark: null, seek: 0 });
+
   useImperativeHandle(
     ref,
     () => ({
@@ -176,36 +192,84 @@ export const DiffPane = forwardRef<
         requestAnimationFrame(seek);
         return true;
       },
+      stepHunk(dir) {
+        const s = scroller.current;
+        if (!s) return;
+        // A hunk is placed with its first changed row at `lead`, below the sticky headers; the one there now is the current hunk.
+        const lead = s.getBoundingClientRect().top + stickyTop + CARD_HEAD + HUNK_LEAD * LINE_PX;
+        const list = entries.flatMap((entry) => {
+          const card = cards.current.get(entry.key);
+          return card && !isCollapsed(entry) ? hunksOf(entry.file).map((h) => ({ entry, card, h })) : [];
+        });
+        const ys = list.map(({ card, h }) => hunkY(card, h));
+        const at = dir === 1 ? ys.findIndex((y) => y > lead + 2) : ys.findLastIndex((y) => y < lead - 2);
+        const next = list[at];
+        if (!next) return;
+        const seek = ++hunkNav.current.seek;
+        hunkNav.current.mark?.remove();
+        hunkNav.current.mark = null;
+        let tries = 0;
+        // Rows far from the viewport are not rendered yet: scroll to an estimate, then re-aim at the real row.
+        let last = -1;
+        const aim = () => {
+          if (seek !== hunkNav.current.seek) return;
+          const row = hunkRow(next.card, next.h);
+          const y = row ? row.getBoundingClientRect().top : hunkY(next.card, next.h);
+          // Settled: on target, or pinned against the top or bottom of the scroll range.
+          if (row && (Math.abs(y - lead) <= 2 || s.scrollTop === last)) return void (hunkNav.current.mark = markHunk(next.card, row));
+          last = s.scrollTop;
+          s.scrollTo({ top: Math.max(0, s.scrollTop + y - lead) });
+          if (tries++ < 12) requestAnimationFrame(() => setTimeout(aim, 40));
+        };
+        aim();
+      },
     }),
-    [entries, perEntry, stickyTop],
+    [entries, perEntry, stickyTop, collapseOverride, viewed],
+  );
+
+  const onGuideFile = useCallback(
+    (e: FileEntry) => {
+      const el = cards.current.get(e.key);
+      if (el) scrollTop(el);
+      onActive(e.key);
+    },
+    [onActive, stickyTop],
   );
 
   let body: ReactNode;
   if (entries.length === 0) {
     body = <Empty view={view} />;
   } else {
-    body = view.sections.map((s) =>
-      s.files.length === 0 && !multi ? null : (
+    body = view.sections.map((s) => {
+      if (s.files.length === 0 && !multi) return null;
+      const sectionEntries = bySection.get(s.id) ?? [];
+      const guide = guideFor(view, s, guides);
+      return (
         <div className="section" key={s.id}>
           {multi && <SectionHead section={s} prefix={prefix} />}
           {multi && s.files.length === 0 && <div className="card-note section-empty">No changes in this branch.</div>}
-          {(bySection.get(s.id) ?? []).map((e) => (
-            <FileCard
-              key={e.key}
-              entry={e}
-              comments={perEntry.get(e.key) ?? NONE}
-              viewed={viewed.has(fileViewedKey(e))}
-              collapsed={isCollapsed(e)}
-              composer={composer?.entryKey === e.key ? composer : null}
-              prefs={prefs}
-              stickyTop={stickyTop}
-              actions={cardActions}
-              cardRef={cardRef}
-            />
+          {guide && <GuideCard guide={guide} entries={sectionEntries} viewed={viewed} controls={guideControls} onFile={onGuideFile} />}
+          {sectionEntries.map((e) => (
+            <Fragment key={e.key}>
+              {e.group && <div className="group-head">{e.group}</div>}
+              <FileCard
+                entry={e}
+                comments={perEntry.get(e.key) ?? NONE}
+                notes={perEntryNotes.get(e.key) ?? NO_NOTE}
+                summary={summaries.get(e.key) ?? null}
+                viewed={viewed.has(fileViewedKey(e))}
+                collapsed={isCollapsed(e)}
+                composer={composer?.entryKey === e.key ? composer : null}
+                prefs={prefs}
+                stickyTop={stickyTop}
+                actions={cardActions}
+                cardRef={cardRef}
+              />
+            </Fragment>
           ))}
         </div>
-      ),
-    );
+      );
+    });
   }
 
   const singleReplay = !multi ? view.sections[0]?.replay : null;
@@ -230,6 +294,44 @@ export const DiffPane = forwardRef<
 });
 
 const NONE: Comment[] = [];
+const NO_NOTE: Note[] = [];
+const NO_NOTES = new Map<string, Note[]>();
+
+const ROW_TYPE = { new: "change-addition", old: "change-deletion" } as const;
+
+const hunkCache = new WeakMap<FileChange, HunkStart[]>();
+function hunksOf(f: FileChange): HunkStart[] {
+  let h = hunkCache.get(f);
+  if (!h) hunkCache.set(f, (h = f.binary ? [] : patchHunks(f.patch)));
+  return h;
+}
+
+/** The rendered row of a hunk's first changed line, inside the diff's shadow root; null until it renders. */
+function hunkRow(card: HTMLElement, h: HunkStart): HTMLElement | null {
+  const root = card.querySelector("diffs-container")?.shadowRoot;
+  return root?.querySelector<HTMLElement>(`[data-line-type="${ROW_TYPE[h.side]}"][data-line="${h.line}"]`) ?? null;
+}
+
+/** Viewport y of a hunk's first changed line: exact once rendered, else estimated from the card and the patch. */
+function hunkY(card: HTMLElement, h: HunkStart): number {
+  const row = hunkRow(card, h);
+  if (row) return row.getBoundingClientRect().top;
+  const head = card.querySelector<HTMLElement>(".card-head")?.offsetHeight ?? 34;
+  return card.getBoundingClientRect().top + head + h.rowsBefore * LINE_PX + h.index * 32;
+}
+
+/** A short-lived accent bar beside the hunk's first block of changed rows. */
+function markHunk(card: HTMLElement, row: HTMLElement): HTMLElement {
+  let height = 0;
+  for (let r: Element | null = row; r?.getAttribute("data-line-type")?.startsWith("change"); r = r.nextElementSibling) height += r.getBoundingClientRect().height;
+  const mark = document.createElement("div");
+  mark.className = "hunk-mark";
+  mark.style.top = `${row.getBoundingClientRect().top - card.getBoundingClientRect().top}px`;
+  mark.style.height = `${height}px`;
+  card.appendChild(mark);
+  mark.addEventListener("animationend", () => mark.remove());
+  return mark;
+}
 
 /** Grabs the Virtualizer's scroll element, which the component does not expose. */
 function ScrollerRef({ target }: { target: React.MutableRefObject<HTMLElement | null> }) {
@@ -240,13 +342,13 @@ function ScrollerRef({ target }: { target: React.MutableRefObject<HTMLElement | 
   return <span ref={ref} hidden />;
 }
 
-/** Per-entry comment arrays that keep their identity while unchanged, so memoized cards skip re-rendering. */
-function useStableComments(entries: FileEntry[], index: Map<string, Comment[]>): Map<string, Comment[]> {
-  const prev = useRef(new Map<string, Comment[]>());
+/** Per-entry comment or note arrays that keep their identity while unchanged, so memoized cards skip re-rendering. */
+function useStableAnchored<T>(entries: FileEntry[], index: Map<string, T[]>): Map<string, T[]> {
+  const prev = useRef(new Map<string, T[]>());
   return useMemo(() => {
-    const next = new Map<string, Comment[]>();
+    const next = new Map<string, T[]>();
     for (const e of entries) {
-      const cs = commentsFor(index, e.file);
+      const cs = anchoredTo(index, e.file);
       const old = prev.current.get(e.key);
       const same = old && old.length === cs.length && old.every((c, i) => c === cs[i]);
       next.set(e.key, same ? old : cs);

@@ -2,7 +2,8 @@ import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { Branch, Commit, RepoState, SessionSummary, Target } from "../model.ts";
 import { CommitIndex, currentStack, sameTarget, sharedPrefix, stripPrefix, treeGuides, treeRows, type Guides, type TreeItem } from "./stack.ts";
 import { splitPath } from "./lines.ts";
-import { Chevron, CommentGlyph, Counts, StatusLetter, type FileEntry } from "./FileCard.tsx";
+import { ago } from "./names.tsx";
+import { Chevron, CommentGlyph, Counts, NoteGlyph, StatusLetter, type FileEntry } from "./FileCard.tsx";
 
 interface Props {
   repo: RepoState;
@@ -13,6 +14,7 @@ interface Props {
   activeKey: string | null;
   isViewed(e: FileEntry): boolean;
   commentCount(e: FileEntry): number;
+  noteCount(e: FileEntry): number;
   onFile(e: FileEntry): void;
   onToggleViewed(e: FileEntry): void;
   width: number;
@@ -285,7 +287,7 @@ function Agent({ repo, target, onSelect }: { repo: RepoState; target: Target | n
 }
 
 const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function Files(
-  { entries, sections, activeKey, isViewed, commentCount, onFile, onToggleViewed, prefix },
+  { entries, sections, activeKey, isViewed, commentCount, noteCount, onFile, onToggleViewed, prefix },
   ref,
 ) {
   const [q, setQ] = useState("");
@@ -323,12 +325,18 @@ const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function 
           const head = sections > 1 && e.section.id !== lastSection ? (e.section.branch ?? e.section.title) : null;
           lastSection = e.section.id;
           const n = commentCount(e);
+          const notes = noteCount(e);
           const viewed = isViewed(e);
           return (
             <div key={e.key}>
               {head && (
                 <div className="file-group" title={head}>
                   {stripPrefix(head, prefix)}
+                </div>
+              )}
+              {e.group && !q && (
+                <div className="file-subgroup" title={e.group}>
+                  {e.group}
                 </div>
               )}
               <div
@@ -344,6 +352,12 @@ const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function 
                   {dir && <span className="dim"> {dir.replace(/\/$/, "")}</span>}
                 </span>
                 <span className="grow" />
+                {notes > 0 && (
+                  <span className="ncount" title={`${notes} author note${notes === 1 ? "" : "s"}`}>
+                    <NoteGlyph />
+                    {notes}
+                  </span>
+                )}
                 {n > 0 && (
                   <span className="ccount">
                     <CommentGlyph />
@@ -373,11 +387,3 @@ const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function 
     </div>
   );
 });
-
-function ago(iso: string): string {
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-}

@@ -2,6 +2,7 @@ import {
   targetToHash,
   type Comment,
   type Decision,
+  type Guide,
   type RepoState,
   type ReviewState,
   type SubmitResponse,
@@ -36,6 +37,7 @@ export const api = {
     return res.text();
   },
   review: () => call<ReviewState>("/api/review"),
+  guides: () => call<Guide[]>("/api/guides"),
   putComment: (c: Comment) => call<ReviewState>(`/api/comments/${encodeURIComponent(c.id)}`, { method: "PUT", json: c }),
   deleteComment: (id: string) => call<ReviewState>(`/api/comments/${encodeURIComponent(id)}`, { method: "DELETE" }),
   setViewed: (key: string, viewed: boolean) => call<ReviewState>("/api/viewed", { method: "PUT", json: { key, viewed } }),

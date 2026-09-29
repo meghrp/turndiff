@@ -1,19 +1,21 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
-import type { Anchor, Comment, FileChange, Oid, Side } from "../model.ts";
+import type { Anchor, FileChange, Oid, Side } from "../model.ts";
 
-const sideKey = (side: Side, path: string, blob: Oid) => `${side}\0${path}\0${blob}`;
+export const sideKey = (side: Side, path: string, blob: Oid) => `${side}\0${path}\0${blob}`;
 
-export function indexComments(comments: Comment[]): Map<string, Comment[]> {
-  const index = new Map<string, Comment[]>();
-  for (const c of comments) {
+/** Comments or notes by the file content they are anchored to. */
+export function indexAnchored<T extends { anchor: Anchor }>(items: readonly T[]): Map<string, T[]> {
+  const index = new Map<string, T[]>();
+  for (const c of items) {
     const k = sideKey(c.anchor.side, c.anchor.path, c.anchor.blob);
     index.set(k, [...(index.get(k) ?? []), c]);
   }
   return index;
 }
 
-export function commentsFor(index: Map<string, Comment[]>, f: FileChange): Comment[] {
-  const out: Comment[] = [];
+/** What `index` holds for either side of `f` as diffed here. */
+export function anchoredTo<T>(index: Map<string, T[]>, f: FileChange): T[] {
+  const out: T[] = [];
   if (f.newBlob) out.push(...(index.get(sideKey("new", f.path, f.newBlob)) ?? []));
   if (f.oldBlob) out.push(...(index.get(sideKey("old", f.oldPath ?? f.path, f.oldBlob)) ?? []));
   return out;
@@ -56,6 +58,23 @@ export function lineInHunks(fd: FileDiffMetadata, side: Side, n: number): boolea
     const count = side === "new" ? h.additionCount : h.deletionCount;
     return n >= start && n < start + count;
   });
+}
+
+/** The first added (new side) or removed (old side) line in start..end, or null when the range changes nothing. */
+export function firstChangedLine(fd: FileDiffMetadata, side: Side, start: number, end: number): number | null {
+  for (const h of fd.hunks) {
+    let n = side === "new" ? h.additionStart : h.deletionStart;
+    for (const c of h.hunkContent) {
+      if (c.type === "context") {
+        n += c.lines;
+        continue;
+      }
+      const count = side === "new" ? c.additions : c.deletions;
+      if (n + count > start && n <= end) return Math.max(n, start);
+      n += count;
+    }
+  }
+  return null;
 }
 
 export function splitPath(path: string): [dir: string, name: string] {

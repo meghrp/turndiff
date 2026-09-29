@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
-import { hashToTarget, targetToHash, type Comment, type RepoState, type ReviewState, type Target, type View } from "../model.ts";
+import { hashToTarget, targetToHash, type Comment, type Guide, type RepoState, type ReviewState, type Target, type View } from "../model.ts";
 import { api } from "./api.ts";
 import { THEMES, usePref, type ThemeName } from "./prefs.ts";
 import { defaultTarget, sameTarget, sharedPrefix } from "./stack.ts";
 import { Dimmed } from "./names.tsx";
-import { commentsFor, indexComments } from "./lines.ts";
-import { DiffPane, fileViewedKey, viewEntries, type DiffPaneHandle } from "./DiffPane.tsx";
+import { anchoredTo, indexAnchored } from "./lines.ts";
+import { guideNotes, viewEntries } from "./guides.ts";
+import { DiffPane, type DiffPaneHandle } from "./DiffPane.tsx";
 import { Rail } from "./Rail.tsx";
 import { ReviewPanel } from "./ReviewPanel.tsx";
-import { Counts, type ComposerState, type FileEntry } from "./FileCard.tsx";
+import { Counts, fileViewedKey, type ComposerState, type FileEntry } from "./FileCard.tsx";
 
 const POLL_MS = 4000;
 const NARROW = 900;
@@ -32,6 +33,10 @@ export function App() {
   const [ws, setWs] = usePref("ignoreWhitespace", false);
   const [railWidth, setRailWidth] = usePref("railWidth", 300);
   const [theme, setTheme] = usePref<ThemeName>("theme", "ayu-dark");
+  const [guided, setGuided] = usePref("guideOrder", true);
+  const [showNotes, setShowNotes] = usePref("notes", true);
+  const [guideCollapsed, setGuideCollapsed] = usePref("guideCollapsed", false);
+  const [guides, setGuides] = useState<Guide[]>([]);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
@@ -93,6 +98,15 @@ export function App() {
     };
   }, [refreshState, refreshReview]);
 
+  const guidesVersion = repo?.guidesVersion;
+  useEffect(() => {
+    if (guidesVersion !== undefined)
+      api
+        .guides()
+        .then(setGuides)
+        .catch(() => {});
+  }, [guidesVersion]);
+
   useEffect(() => {
     if (repo && !target) {
       const t = defaultTarget(repo);
@@ -140,9 +154,22 @@ export function App() {
     }
   }, [view, loading]);
 
-  const entries = useMemo(() => (view ? viewEntries(view) : []), [view]);
+  const guideMap = useMemo(() => new Map(guides.map((g) => [g.branch, g])), [guides]);
+  const entries = useMemo(() => (view ? viewEntries(view, guideMap, guided) : []), [view, guideMap, guided]);
   const viewed = useMemo(() => new Set(review.viewed), [review.viewed]);
-  const commentIndex = useMemo(() => indexComments(review.comments), [review.comments]);
+  const commentIndex = useMemo(() => indexAnchored(review.comments), [review.comments]);
+  const noteIndex = useMemo(() => (showNotes ? indexAnchored(guideNotes(guides)) : null), [guides, showNotes]);
+  const guideControls = useMemo(
+    () => ({
+      collapsed: guideCollapsed,
+      toggleCollapsed: () => setGuideCollapsed((c) => !c),
+      guided,
+      toggleGuided: () => setGuided((g) => !g),
+      notes: showNotes,
+      toggleNotes: () => setShowNotes((n) => !n),
+    }),
+    [guideCollapsed, guided, showNotes, setGuideCollapsed, setGuided, setShowNotes],
+  );
 
   useEffect(() => {
     document.title = repo ? `${view?.title ?? repo.name} · turndiff` : "turndiff";
@@ -231,6 +258,10 @@ export function App() {
         },
         b: () => setRailOpen((o) => !o),
         c: () => setPanel((p) => (p === "review" ? null : "review")),
+        g: guideControls.toggleGuided,
+        a: guideControls.toggleNotes,
+        "]": () => pane.current?.stepHunk(1),
+        "[": () => pane.current?.stepHunk(-1),
         "?": () => setPanel((p) => (p === "help" ? null : "help")),
         Escape: () => setPanel(null),
       };
@@ -244,7 +275,7 @@ export function App() {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [entries, activeKey, scrollToFile, toggleViewed, reload, setDiffStyle, nextTheme]);
+  }, [entries, activeKey, scrollToFile, toggleViewed, reload, setDiffStyle, nextTheme, guideControls]);
 
   if (!repo) {
     return (
@@ -358,7 +389,8 @@ export function App() {
             sections={view?.sections.length ?? 0}
             activeKey={activeKey}
             isViewed={(e) => viewed.has(fileViewedKey(e))}
-            commentCount={(e) => commentsFor(commentIndex, e.file).length}
+            commentCount={(e) => anchoredTo(commentIndex, e.file).length}
+            noteCount={(e) => (noteIndex ? anchoredTo(noteIndex, e.file).length : 0)}
             onFile={scrollToFile}
             onToggleViewed={(e) => void toggleViewed(e)}
             width={railWidth}
@@ -373,6 +405,9 @@ export function App() {
           entries={entries}
           review={review}
           viewed={viewed}
+          guides={guideMap}
+          notes={noteIndex}
+          guideControls={guideControls}
           prefs={{ diffStyle, wrap, theme }}
           prefix={prefix}
           toolbar={toolbar}
@@ -408,6 +443,7 @@ export function App() {
 
 const KEYS: [string, string][] = [
   ["j / k", "next / previous file"],
+  ["] / [", "next / previous hunk"],
   ["v", "toggle viewed"],
   ["u", "unified / split"],
   ["t", "switch theme"],
@@ -415,6 +451,8 @@ const KEYS: [string, string][] = [
   ["/", "filter files"],
   ["b", "toggle sidebar"],
   ["c", "review panel"],
+  ["g", "guide order / tree order"],
+  ["a", "show / hide author notes"],
   ["⌘↵", "save comment"],
   ["esc", "close"],
   ["?", "this list"],

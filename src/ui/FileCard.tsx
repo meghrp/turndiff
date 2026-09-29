@@ -1,16 +1,22 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parsePatchFiles, type FileDiffMetadata, type SelectedLineRange } from "@pierre/diffs";
 import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from "@pierre/diffs/react";
-import type { Anchor, Comment, FileChange, Section } from "../model.ts";
+import { viewedKey, type Anchor, type Comment, type FileChange, type Section } from "../model.ts";
 import { api } from "./api.ts";
 import { anchorKey, lineInHunks, lineTexts, splitPath, toPierreSide, toSide } from "./lines.ts";
 import { drafts, THEMES, type ThemeName } from "./prefs.ts";
+import { noteLine, type Note } from "./guides.ts";
+import { Markdown } from "./markdown.tsx";
 
 export interface FileEntry {
   key: string;
   section: Section;
   file: FileChange;
+  /** Title of the guide group this entry opens in guided order. */
+  group: string | null;
 }
+
+export const fileViewedKey = (e: FileEntry) => viewedKey(e.file.path, e.file.newBlob ?? e.file.oldBlob ?? "");
 
 export interface ComposerState {
   entryKey: string;
@@ -34,7 +40,7 @@ export interface DisplayPrefs {
   wrap: boolean;
 }
 
-type Meta = { kind: "comment"; comment: Comment } | { kind: "composer" };
+type Meta = { kind: "comment"; comment: Comment } | { kind: "note"; note: Note } | { kind: "composer" };
 
 const LARGE_DIFF_LINES = 1500;
 const STATUS_LETTER = { added: "A", deleted: "D", modified: "M", renamed: "R" } as const;
@@ -61,6 +67,8 @@ function parse(f: FileChange): FileDiffMetadata | null {
 export const FileCard = memo(function FileCard({
   entry,
   comments,
+  notes,
+  summary,
   viewed,
   collapsed,
   composer,
@@ -71,6 +79,10 @@ export const FileCard = memo(function FileCard({
 }: {
   entry: FileEntry;
   comments: Comment[];
+  /** Author notes to show; empty while notes are hidden. */
+  notes: Note[];
+  /** The guide's summary of this file. */
+  summary: string | null;
   viewed: boolean;
   collapsed: boolean;
   composer: ComposerState | null;
@@ -142,9 +154,10 @@ export const FileCard = memo(function FileCard({
         lineNumber: lineInHunks(fd, c.anchor.side, c.anchor.end) ? c.anchor.end : 0,
         metadata: { kind: "comment", comment: c },
       }));
+    for (const n of notes) out.push({ side: toPierreSide(n.anchor.side), lineNumber: noteLine(fd, n.anchor), metadata: { kind: "note", note: n } });
     if (composer) out.push({ side: toPierreSide(composer.anchor.side), lineNumber: composer.anchor.end, metadata: { kind: "composer" } });
     return out;
-  }, [fd, comments, composer]);
+  }, [fd, comments, notes, composer]);
 
   const selected: SelectedLineRange | null =
     drag ?? (composer ? { start: composer.anchor.start, end: composer.anchor.end, side: toPierreSide(composer.anchor.side) } : null);
@@ -161,6 +174,17 @@ export const FileCard = memo(function FileCard({
             actions.openComposer({ entryKey: entry.key, anchor: m.comment.anchor, snippet: m.comment.snippet, editing: m.comment })
           }
           onDelete={() => actions.remove(m.comment)}
+        />
+      );
+    if (m.kind === "note")
+      return (
+        <NoteCard
+          note={m.note}
+          pinned={a.lineNumber === 0}
+          onReply={() => {
+            const { anchor } = m.note;
+            actions.openComposer({ entryKey: entry.key, anchor, snippet: fd ? lineTexts(fd, anchor.side, anchor.start, anchor.end) : [], editing: null });
+          }}
         />
       );
     return null;
@@ -228,6 +252,7 @@ export const FileCard = memo(function FileCard({
           Viewed
         </label>
       </header>
+      {summary && !collapsed && <Markdown className="card-summary" text={summary} />}
       {body()}
     </section>
   );
@@ -376,6 +401,42 @@ function CommentCard({
     </div>
   );
 }
+
+function NoteCard({ note, pinned, onReply }: { note: Note; pinned: boolean; onReply: () => void }) {
+  const [why, setWhy] = useState(false);
+  const { anchor } = note;
+  return (
+    <div className="note" data-note={note.id} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="note-head">
+        <NoteGlyph />
+        <span>{note.author ?? "author"} note</span>
+        {pinned && (
+          <span className="dim">
+            {anchor.side === "old" ? "old " : ""}line {anchor.start}
+            {anchor.end !== anchor.start ? `–${anchor.end}` : ""}
+          </span>
+        )}
+        <span className="grow" />
+        {note.rationale && (
+          <button className={`link${why ? " on" : ""}`} aria-expanded={why} onClick={() => setWhy((w) => !w)}>
+            Why
+          </button>
+        )}
+        <button className="link" onClick={onReply}>
+          Reply
+        </button>
+      </div>
+      <Markdown className="note-body" text={note.summary} />
+      {why && note.rationale && <Markdown className="note-why" text={note.rationale} />}
+    </div>
+  );
+}
+
+export const NoteGlyph = () => (
+  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden>
+    <path d="M2.5 1.5h5l2 2v7h-7z M4.5 5.5h3 M4.5 7.5h3" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+  </svg>
+);
 
 export const Chevron = ({ open }: { open: boolean }) => (
   <svg width="10" height="10" viewBox="0 0 10 10" className={`chevron${open ? " open" : ""}`} aria-hidden>

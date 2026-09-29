@@ -1059,3 +1059,237 @@ kbd {
   gap: 14px;
   margin-bottom: 10px;
 }
+
+/* Author guides and notes. Notes use --mod so they never read as reviewer comments (--accent). */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 6px;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+.md code {
+  font: 11.5px var(--mono);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--hover);
+}
+.md pre {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--bg-editor);
+  overflow: auto;
+}
+.md pre code {
+  padding: 0;
+  background: none;
+}
+.md a {
+  color: var(--mod);
+}
+.tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+.guide {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-raised);
+}
+.guide-head {
+  height: 34px;
+  padding: 0 10px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.guide-head .toggle {
+  height: 20px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+.guide-label {
+  color: var(--fg);
+}
+.guide-body {
+  padding: 0 14px 12px 28px;
+  color: var(--fg-mid);
+  max-width: 900px;
+}
+.guide-intent {
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.guide-group {
+  margin-top: 12px;
+}
+.guide-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 11px;
+}
+.guide-group-title {
+  color: var(--fg);
+  font-size: 12px;
+}
+.guide-overview {
+  margin-bottom: 4px;
+}
+.guide-files {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  column-gap: 14px;
+}
+.guide-file {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.guide-file:hover {
+  background: var(--hover);
+}
+.guide-file:hover > * {
+  color: var(--fg);
+}
+.guide-file.is-viewed .guide-path {
+  color: var(--fg-dim);
+}
+.guide-file.gone {
+  cursor: default;
+}
+.guide-file.gone .guide-path {
+  color: var(--fg-dim);
+  text-decoration: line-through;
+}
+.guide-path {
+  font: 12px var(--mono);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.guide-path .dim {
+  margin-right: -6px;
+}
+.guide-summary {
+  color: var(--fg-mid);
+  min-width: 0;
+}
+.guide-stale {
+  margin-top: 10px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.group-head {
+  margin: 14px 0 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.section > .guide + .group-head {
+  margin-top: 0;
+}
+.file-subgroup {
+  padding: 5px 12px 1px 22px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card {
+  position: relative;
+}
+.card-summary {
+  padding: 5px 12px 6px 30px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+.note {
+  font: 12.5px/1.5 var(--sans);
+  color: var(--fg-mid);
+  margin: 6px 12px;
+  max-width: 820px;
+  padding: 5px 10px 6px;
+  border: 1px solid var(--border);
+  border-left: 2px solid color-mix(in srgb, var(--mod) 60%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--mod) 4%, var(--bg-editor));
+  white-space: normal;
+}
+.note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.note-head svg {
+  color: color-mix(in srgb, var(--mod) 70%, var(--fg-dim));
+}
+.note-head .link {
+  font-size: 11px;
+}
+.note-head .link.on {
+  color: var(--fg);
+}
+.note-body {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.note-why {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+.ncount {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: color-mix(in srgb, var(--mod) 70%, var(--fg-dim));
+  font-size: 11px;
+}
+.hunk-mark {
+  position: absolute;
+  left: 0;
+  width: 2px;
+  z-index: 2;
+  background: var(--accent);
+  pointer-events: none;
+  animation: hunk-mark 1.8s ease-out forwards;
+}
+@keyframes hunk-mark {
+  0%,
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
