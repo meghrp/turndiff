@@ -6,11 +6,11 @@ import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { git, gitRaw, type RepoPaths } from "./exec.ts";
+import { gitRaw, type RepoPaths } from "./exec.ts";
 import { snapshotWorktree } from "./diff.ts";
 import { loadStack, repoVersion } from "./stack.ts";
 import { resolveView, TargetError } from "./views.ts";
-import type { Annotation, Branch, FileChange, Guide, GuideFile, GuideSection, Oid, Side } from "../model.ts";
+import type { Annotation, FileChange, Guide, GuideFile, GuideSection, Oid, Side } from "../model.ts";
 
 export type GuideCheck = { ok: true; guide: Guide; changedFiles: number; warnings: string[] } | { ok: false; errors: string[] };
 
@@ -26,6 +26,7 @@ export async function checkGuide(paths: RepoPaths, branchName: string, raw: unkn
   const stack = await loadStack(paths, status);
   const branch = stack.branches.find((b) => b.name === branchName);
   if (!branch) return { ok: false, errors: [`${branchName} is not a branch of this stack`] };
+  if (branch.parent === null) return { ok: false, errors: [`${branchName} is the trunk, which has no parent to diff against; pass --branch with a stack branch`] };
   let files: FileChange[];
   try {
     const view = await resolveView(
@@ -58,25 +59,23 @@ export async function checkGuide(paths: RepoPaths, branchName: string, raw: unkn
     }),
   }));
 
+  // Blobs come from the diff itself, so a note matches exactly what the branch view shows (symlinks included).
   const annotations = input.annotations.flatMap((a) => {
     const where = `annotations[${a.index}]`;
-    const file = a.side === "new" ? byPath.get(a.path) : files.find((f) => (f.oldPath ?? f.path) === a.path);
+    // The help asks for new paths; for the old side of a rename, agents also try the old path.
+    const file = byPath.get(a.path) ?? (a.side === "old" ? files.find((f) => f.oldPath === a.path) : undefined);
     if (!file) return errors.push(notChanged(where, a.path)), [];
     if (file.binary) return errors.push(`${where}: ${a.path} is binary`), [];
-    if ((a.side === "new" ? file.newBlob : file.oldBlob) === null) {
+    const blob = a.side === "new" ? file.newBlob : file.oldBlob;
+    if (blob === null) {
       return errors.push(`${where}: ${a.path} has no ${a.side} side on ${branchName} (it is ${file.status}); use side "${a.side === "new" ? "old" : "new"}"`), [];
     }
-    return [a];
+    return [{ ...a, anchorPath: a.side === "new" ? file.path : (file.oldPath ?? file.path), blob }];
   });
 
-  const wanted = [
-    ...sections.flatMap((s) => s.files.filter((f) => byPath.get(f.path)!.newBlob !== null).map((f) => ({ side: "new" as const, path: f.path }))),
-    ...annotations.map((a) => ({ side: a.side, path: a.path })),
-  ];
-  const blobs = await resolveBlobs(paths, branch, wanted);
-  const lineCounts = await countLines(paths, branch, annotations, blobs);
+  const lineCounts = await countLines(paths, annotations.map((a) => a.blob));
   for (const a of annotations) {
-    const n = lineCounts.get(sideKey(a.side, a.path))!;
+    const n = lineCounts.get(a.blob)!;
     if (a.lines[1] > n) errors.push(`annotations[${a.index}]: lines ${a.lines[0]}-${a.lines[1]} are outside ${a.path}, which has ${n} line${n === 1 ? "" : "s"} on the ${a.side} side`);
   }
   if (errors.length > 0) return { ok: false, errors };
@@ -96,13 +95,13 @@ export async function checkGuide(paths: RepoPaths, branchName: string, raw: unkn
       (s): GuideSection => ({
         title: s.title,
         overview: s.overview,
-        files: s.files.map((f): GuideFile => ({ path: f.path, summary: f.summary, blob: byPath.get(f.path)!.newBlob === null ? null : (blobs.get(sideKey("new", f.path)) ?? null) })),
+        files: s.files.map((f): GuideFile => ({ path: f.path, summary: f.summary, blob: byPath.get(f.path)!.newBlob })),
       }),
     ),
     annotations: annotations.map(
       (a): Annotation => ({
         id: crypto.randomUUID(),
-        anchor: { path: a.path, side: a.side, start: a.lines[0], end: a.lines[1], blob: blobs.get(sideKey(a.side, a.path))! },
+        anchor: { path: a.anchorPath, side: a.side, start: a.lines[0], end: a.lines[1], blob: a.blob },
         summary: a.summary,
         rationale: a.rationale,
       }),
@@ -112,7 +111,6 @@ export async function checkGuide(paths: RepoPaths, branchName: string, raw: unkn
 }
 
 const list = (paths: string[]) => (paths.length <= 10 ? paths.join(", ") : `${paths.slice(0, 10).join(", ")} and ${paths.length - 10} more`);
-const sideKey = (side: Side, path: string) => `${side}\0${path}`;
 
 /** GuideInput after parsing. `index` is the item's position in the agent's JSON, for error messages. */
 interface ParsedInput {
@@ -197,39 +195,12 @@ function parseInput(raw: unknown, errors: string[]): ParsedInput {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/**
- * Blob of each path on each side. New side: the file on disk when the branch
- * is checked out in this worktree, else the branch tip. Old side: the branch
- * base. Null when the path does not exist there.
- */
-export async function resolveBlobs(paths: RepoPaths, branch: Branch, wanted: { side: Side; path: string }[]): Promise<Map<string, Oid | null>> {
-  const out = new Map<string, Oid | null>();
-  const unique = [...new Map(wanted.map((w) => [sideKey(w.side, w.path), w])).values()];
-  const onDisk = unique.filter((w) => w.side === "new" && branch.current && isFile(join(paths.root, w.path)));
-  if (onDisk.length > 0) {
-    const oids = (await git(paths.root, ["hash-object", "--stdin-paths"], { stdin: onDisk.map((w) => w.path).join("\n") + "\n" })).split("\n");
-    onDisk.forEach((w, i) => out.set(sideKey(w.side, w.path), oids[i]!));
-  }
-  const inGit = unique.filter((w) => !out.has(sideKey(w.side, w.path)));
-  if (inGit.length > 0) {
-    const revs = inGit.map((w) => `${w.side === "new" ? branch.tip : branch.base}:${w.path}`);
-    const lines = (await git(paths.root, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { stdin: revs.join("\n") + "\n" })).split("\n");
-    inGit.forEach((w, i) => {
-      const [oid, type] = lines[i]!.split(" ");
-      out.set(sideKey(w.side, w.path), type === "blob" ? oid! : null);
-    });
-  }
-  return out;
-}
-
-async function countLines(paths: RepoPaths, branch: Branch, wanted: { side: Side; path: string }[], blobs: Map<string, Oid | null>): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  for (const w of wanted) {
-    const key = sideKey(w.side, w.path);
-    if (out.has(key)) continue;
-    const disk = w.side === "new" && branch.current && isFile(join(paths.root, w.path));
-    const text = disk ? await readFile(join(paths.root, w.path), "utf8") : (await gitRaw(paths.root, ["cat-file", "blob", blobs.get(key)!])).stdout;
-    out.set(key, text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+/** Lines in each blob. The diff's blobs are in the object store, worktree ones included (snapshotWorktree writes them). */
+async function countLines(paths: RepoPaths, blobs: Oid[]): Promise<Map<Oid, number>> {
+  const out = new Map<Oid, number>();
+  for (const oid of new Set(blobs)) {
+    const text = (await gitRaw(paths.root, ["cat-file", "blob", oid])).stdout;
+    out.set(oid, text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
   }
   return out;
 }

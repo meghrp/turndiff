@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { rm, writeFile } from "node:fs/promises";
+import { rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git, repoPaths, type RepoPaths } from "./exec.ts";
 import { checkGuide, guidesVersion, readGuides, removeGuide, writeGuide } from "./guides.ts";
@@ -103,13 +103,49 @@ describe("validation", () => {
 
   test("the trunk and unknown branches are refused", async () => {
     const input = { intent: "x", sections: [section("S", "a.txt")] };
-    expect(await checkGuide(paths, "main", input)).toEqual({ ok: false, errors: ["main is the trunk; pick a commit or the uncommitted changes instead"] });
+    expect(await checkGuide(paths, "main", input)).toEqual({ ok: false, errors: ["main is the trunk, which has no parent to diff against; pass --branch with a stack branch"] });
     expect(await checkGuide(paths, "nope", input)).toEqual({ ok: false, errors: ["nope is not a branch of this stack"] });
   });
 
   test("files no section places are a warning, not an error", async () => {
     const r = await checkGuide(paths, "feat-b", { intent: "x", sections: [section("S", "feat_b.py")] });
     expect(r.ok && r.warnings).toEqual(['2 changed files are in no section and will be listed under "Everything else": feat_a.py, notes.md']);
+  });
+});
+
+describe("anchors come from the branch diff", () => {
+  let other: Scenario;
+  let otherPaths: RepoPaths;
+  beforeAll(async () => {
+    other = await buildScenario();
+    otherPaths = await repoPaths(other.root);
+    // On feat-b's worktree: rename feat_a.py (a1 a2 a3 at the base) with an edit, and add a symlink.
+    await rm(join(other.root, "feat_a.py"));
+    await writeFile(join(other.root, "renamed.py"), "a1\na2\na3\na4\n");
+    await writeFile(join(other.root, "target.txt"), "t1\nt2\nt3\n");
+    await symlink("target.txt", join(other.root, "link.txt"));
+  });
+  afterAll(() => rm(other.root, { recursive: true, force: true }));
+
+  const note = (path: string, side: "old" | "new", lines: [number, number]) => ({ path, side, lines, summary: "s" });
+  const check = (annotations: ReturnType<typeof note>[]) => checkGuide(otherPaths, "feat-b", { intent: "x", sections: [section("S", "feat_b.py")], annotations });
+
+  test("an old-side note on a renamed file takes the new or the old path and anchors at the old path", async () => {
+    const r = await check([note("renamed.py", "old", [2, 2]), note("feat_a.py", "old", [3, 3]), note("renamed.py", "new", [4, 4])]);
+    if (!r.ok) throw new Error(r.errors.join("\n"));
+    const base = await git(other.root, ["rev-parse", "feat-a:feat_a.py"]);
+    expect(r.guide.annotations.map((a) => a.anchor)).toEqual([
+      { path: "feat_a.py", side: "old", start: 2, end: 2, blob: base },
+      { path: "feat_a.py", side: "old", start: 3, end: 3, blob: base },
+      { path: "renamed.py", side: "new", start: 4, end: 4, blob: await git(other.root, ["hash-object", "renamed.py"]) },
+    ]);
+  });
+
+  test("a note on a symlink anchors to the link's own blob and counts the link's lines", async () => {
+    const linkBlob = await git(other.root, ["hash-object", "--stdin"], { stdin: "target.txt" });
+    const r = await check([note("link.txt", "new", [1, 1])]);
+    expect(r.ok && r.guide.annotations[0]!.anchor.blob).toBe(linkBlob);
+    expect(await check([note("link.txt", "new", [1, 3])])).toEqual({ ok: false, errors: ["annotations[0]: lines 1-3 are outside link.txt, which has 1 line on the new side"] });
   });
 });
 
