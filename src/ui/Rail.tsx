@@ -335,8 +335,8 @@ const Files = forwardRef<HTMLInputElement, Props & { prefix: string }>(function 
                 </div>
               )}
               {e.group && !q && (
-                <div className="file-subgroup" title={e.group}>
-                  {e.group}
+                <div className="file-subgroup" title={e.group.title}>
+                  {e.group.title}
                 </div>
               )}
               <div

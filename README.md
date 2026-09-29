@@ -37,7 +37,7 @@ turndiff guide - --branch feat-a < g.json
 turndiff guide --remove --branch feat-a
 ```
 
-In branch and stack views, a guide card opens the branch's section. It shows the intent, then the guide's sections with an overview, a "k/n viewed" count, and one row per file with its summary. Click a row to jump to the file. Files the guide does not place are listed under "Everything else". The rail and the diff list files in the guide's order, and `g` switches back to tree order.
+In branch and stack views, a guide card opens the branch's section. It shows the intent, then one row per guide section with its file count and a "k/n viewed" count. Click a row to jump to that group in the diff, or expand it to read the section's overview and its files with their summaries. Files the guide does not place form an "Everything else" group. The rail and the diff list files in the guide's order, and each group in the diff opens with its title and overview, so you read the explanation right before the code. `g` switches back to tree order.
 
 The guide can also leave notes on line ranges. A note is anchored to the file's content the same way a comment is, so it shows just above the lines it covers wherever that content is diffed, and never moves onto other code. "Why" shows the author's reasoning, and "Reply" opens a comment on the same lines. When the code changes, the guide card tags the file "changed since" and counts the notes that no longer match.
 

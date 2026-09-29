@@ -77,7 +77,7 @@ test("guided order follows the guide's sections, then everything else, in branch
     notes: [],
     version: "",
   });
-  const order = (v: View, guided: boolean) => viewEntries(v, new Map([["x", guide]]), guided).map((e) => [e.file.path, e.group]);
+  const order = (v: View, guided: boolean) => viewEntries(v, new Map([["x", guide]]), guided).map((e) => [e.file.path, e.group?.title ?? null]);
   expect(order(view("branch"), true)).toEqual([
     ["c", "Core"],
     ["a", "Glue"],

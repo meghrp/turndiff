@@ -12,8 +12,8 @@ export interface FileEntry {
   key: string;
   section: Section;
   file: FileChange;
-  /** Title of the guide group this entry opens in guided order. */
-  group: string | null;
+  /** The guide group this entry opens in guided order; "Everything else" has no overview. */
+  group: { title: string; overview: string | null } | null;
 }
 
 export const fileViewedKey = (e: FileEntry) => viewedKey(e.file.path, e.file.newBlob ?? e.file.oldBlob ?? "");

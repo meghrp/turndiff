@@ -5,6 +5,7 @@ import { Dimmed } from "./names.tsx";
 import { anchoredTo, indexAnchored } from "./lines.ts";
 import { guideFor, patchHunks, type HunkStart, type Note } from "./guides.ts";
 import { GuideCard, type GuideControls } from "./GuideCard.tsx";
+import { Markdown } from "./markdown.tsx";
 import { Counts, FileCard, fileViewedKey, type CardActions, type ComposerState, type DisplayPrefs, type FileEntry } from "./FileCard.tsx";
 
 export interface DiffPaneHandle {
@@ -122,10 +123,11 @@ export const DiffPane = forwardRef<
     s.scrollTo({ top: Math.max(0, top) });
   };
 
+  const groupHeads = useRef(new Map<string, HTMLElement>());
   /** A file the reviewer jumped to (rail, guide, j/k). */
   const chosen = useRef<string | null>(null);
   const jump = (key: string) => {
-    const el = cards.current.get(key);
+    const el = groupHeads.current.get(key) ?? cards.current.get(key);
     if (!el) return;
     chosen.current = key;
     scrollTop(el);
@@ -138,7 +140,8 @@ export const DiffPane = forwardRef<
     const edge = s.getBoundingClientRect().top + stickyTop + 8;
     let active: string | null = entries[0]?.key ?? null;
     for (const e of entries) {
-      const el = cards.current.get(e.key);
+      // A group header belongs to the file it opens.
+      const el = groupHeads.current.get(e.key) ?? cards.current.get(e.key);
       if (!el) continue;
       if (el.getBoundingClientRect().top <= edge) active = e.key;
       else break;
@@ -278,7 +281,18 @@ export const DiffPane = forwardRef<
           {guide && <GuideCard guide={guide} entries={sectionEntries} viewed={viewed} controls={guideControls} onFile={onGuideFile} />}
           {sectionEntries.map((e) => (
             <Fragment key={e.key}>
-              {e.group && <div className="group-head">{e.group}</div>}
+              {e.group && (
+                <div
+                  className="group-head"
+                  ref={(el) => {
+                    if (el) groupHeads.current.set(e.key, el);
+                    else groupHeads.current.delete(e.key);
+                  }}
+                >
+                  <div className="group-head-title">{e.group.title}</div>
+                  {e.group.overview && <Markdown className="group-head-overview" text={e.group.overview} />}
+                </div>
+              )}
               <FileCard
                 entry={e}
                 comments={perEntry.get(e.key) ?? NONE}
@@ -347,7 +361,7 @@ function hunkY(card: HTMLElement, h: HunkStart): number {
   return card.getBoundingClientRect().top + head + h.rowsBefore * LINE_PX + h.index * 32;
 }
 
-/** A short-lived accent bar beside the hunk's first block of changed rows. */
+/** A short-lived accent band over the hunk's first block of changed rows, with a bar at its left edge. */
 function markHunk(card: HTMLElement, row: HTMLElement, h: HunkStart): HTMLElement {
   let height = 0;
   for (let r: Element | null = row; r?.getAttribute("data-line-type")?.startsWith("change"); r = r.nextElementSibling) height += r.getBoundingClientRect().height;
@@ -357,7 +371,7 @@ function markHunk(card: HTMLElement, row: HTMLElement, h: HunkStart): HTMLElemen
   mark.style.top = `${row.getBoundingClientRect().top - card.getBoundingClientRect().top}px`;
   mark.style.height = `${height}px`;
   card.appendChild(mark);
-  mark.addEventListener("animationend", () => mark.remove());
+  setTimeout(() => mark.remove(), 1900);
   return mark;
 }
 

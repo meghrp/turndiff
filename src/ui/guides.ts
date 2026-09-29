@@ -27,13 +27,13 @@ export function viewEntries(view: View, guides: Map<string, Guide>, guided: bool
     if (!guide) return plain;
     const rest = new Map(plain.map((e) => [e.file.path, e]));
     const out: FileEntry[] = [];
-    const take = (entries: FileEntry[], title: string) =>
+    const take = (entries: FileEntry[], title: string, overview: string | null) =>
       entries.forEach((e, i) => {
         rest.delete(e.file.path);
-        out.push({ ...e, group: i === 0 ? title : null });
+        out.push({ ...e, group: i === 0 ? { title, overview } : null });
       });
-    for (const s of guide.sections) take(s.files.flatMap((f) => rest.get(f.path) ?? []), s.title);
-    take([...rest.values()], EVERYTHING_ELSE);
+    for (const s of guide.sections) take(s.files.flatMap((f) => rest.get(f.path) ?? []), s.title, s.overview);
+    take([...rest.values()], EVERYTHING_ELSE, null);
     return out;
   });
 }

@@ -177,10 +177,11 @@ try {
   assert(true, "the open tab picks up the new guide from guidesVersion");
   const guideText = await guideCard.innerText();
   assert(
-    guideText.includes("claude") && guideText.includes("Give feat-b three functions.") && guideText.includes("Adds g and h.") && guideText.includes("0/1 viewed"),
-    "the guide card shows author, intent, file summaries and viewed counts",
+    guideText.includes("claude") && guideText.includes("Give feat-b three functions.") && guideText.includes("1 file") && guideText.includes("0/1 viewed"),
+    "the guide card shows author, intent, and a file and viewed count per section",
   );
-  assert((await guideCard.locator("strong").innerText()) === "three" && (await guideCard.locator("img").count()) === 0, "guide markdown renders, raw HTML does not");
+  assert(!guideText.includes("Adds g and h.") && !guideText.includes("return constants"), "sections start collapsed: no overviews or file rows in the card");
+  assert((await guideCard.locator("strong").innerText()) === "three" && (await page.locator(".guide img, .group-head img").count()) === 0, "guide markdown renders, raw HTML does not");
   assert(
     JSON.stringify(await guideCard.locator(".guide-group-title").allInnerTexts()) === JSON.stringify(["Scratch notes", "New functions"]),
     "the guide card lists its sections in order",
@@ -190,15 +191,26 @@ try {
   const paneOrder = () => page.locator(".card .card-head .path").evaluateAll((els) => els.map((e) => e.textContent));
   const guided = JSON.stringify(["notes.md", "feat_b.py"]);
   assert(JSON.stringify(await railOrder()) === guided && JSON.stringify(await paneOrder()) === guided, "rail and pane follow the guide's order");
-  assert(JSON.stringify(await page.locator(".group-head").allInnerTexts()) === JSON.stringify(["Scratch notes", "New functions"]), "the pane heads each guide group");
+  assert(JSON.stringify(await page.locator(".group-head .group-head-title").allInnerTexts()) === JSON.stringify(["Scratch notes", "New functions"]), `the pane heads each guide group (${await page.locator(".group-head").allInnerTexts()})`);
+  assert((await page.locator(".group-head .group-head-overview").nth(1).innerText()) === "g and h return constants for now.", "each group header carries its section's overview");
   assert((await page.locator(".card", { hasText: "feat_b.py" }).locator(".card-summary").innerText()) === "Adds g and h.", "the file card shows its guide summary");
+
+  const scrollerY = () => page.locator(".scroller").evaluate((s) => s.getBoundingClientRect().top);
+  await guideCard.locator(".guide-group-row", { hasText: "Scratch notes" }).click();
+  await page.waitForTimeout(200);
+  const headTop = (await page.locator(".group-head").first().evaluate((h) => h.getBoundingClientRect().top)) - (await scrollerY());
+  assert(Math.abs(headTop) < 4, `clicking a section row scrolls to its group in the diff (${Math.round(headTop)}px)`);
+  await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
+  await guideCard.getByRole("button", { name: "Expand New functions", exact: true }).click();
+  const expanded = guideCard.locator(".guide-group.open");
+  assert((await expanded.innerText()).includes("g and h return constants for now.") && (await expanded.innerText()).includes("Adds g and h."), "expanding a section shows its overview and file rows with summaries");
   await guideCard.locator(".guide-file", { hasText: "feat_b.py" }).click();
   await page.waitForFunction(() => document.querySelector(".files .row.file.active")?.textContent?.includes("feat_b.py"));
   const bTop = await page.locator(".card", { hasText: "feat_b.py" }).evaluate((c) => {
     const s = document.querySelector(".scroller")!;
     return { top: c.getBoundingClientRect().top - s.getBoundingClientRect().top, scrollTop: s.scrollTop, max: s.scrollHeight - s.clientHeight };
   });
-  assert(Math.abs(bTop.top) < 4 || (bTop.scrollTop === bTop.max && bTop.top > 0 && bTop.top < 60), `clicking a guide file row scrolls to its card (${JSON.stringify(bTop)})`);
+  assert(bTop.top >= -4 && bTop.top < 120, `clicking a guide file row scrolls to its file (${JSON.stringify(bTop)})`);
   await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
   await page.keyboard.press("g");
   await page.waitForFunction(() => document.querySelector(".card .card-head .path")?.textContent === "feat_b.py");
@@ -258,29 +270,51 @@ try {
   assert(JSON.stringify(await paneOrder()) === guided && (await page.locator(".note").count()) === 1, "the guide, its order and its notes survive a reload");
   assert((await page.locator(".guide-body").count()) === 0, "the collapsed guide stays collapsed");
   await page.locator(".guide-head .chev").click();
+  assert(JSON.stringify(await page.locator(".guide-group.open .guide-group-title").allInnerTexts()) === JSON.stringify(["New functions"]), "an expanded section stays expanded");
 
   await writeFile(join(root, "feat_b.py"), "def f():\n    return 1\n\ndef g():\n    return 20\n");
   await page.locator(".pill").waitFor({ timeout: 15_000 });
   await page.keyboard.press("r");
-  await page.locator(".guide .tag", { hasText: "changed since" }).waitFor();
+  await page.locator(".guide-group-row .tag", { hasText: "1 changed since" }).waitFor();
   assert((await page.locator(".guide-stale").innerText()) === "1 note is on code that has changed since", "the guide flags changed files and notes on changed code");
   assert((await page.locator(".note").count()) === 0, "a note on changed code no longer renders in the diff");
   await shot("guide-stale");
 
   const long = Array.from({ length: 70 }, (_, i) => `long ${i + 1}${[10, 30, 50].includes(i + 1) ? " changed" : ""}`).join("\n") + "\n";
   await writeFile(join(root, "long.txt"), long);
-  const replaced = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "cli.ts"), "guide"], {
-    cwd: root,
-    stdin: new Response(JSON.stringify({ ...guideInput, annotations: [{ path: "long.txt", lines: [5, 5], summary: "Line 5 is unchanged context." }] })),
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  assert((await replaced.exited) === 0, "a second turndiff guide replaces the first");
+  await writeFile(join(root, "extra.txt"), "one extra file\n");
+  const threeSections = {
+    ...guideInput,
+    sections: [
+      ...guideInput.sections,
+      { title: "Extras", overview: "A file the other sections do not need, kept apart so it is easy to **drop**.", files: [{ path: "extra.txt", summary: "One line of filler." }] },
+    ],
+    annotations: [{ path: "long.txt", lines: [5, 5], summary: "Line 5 is unchanged context." }],
+  };
+  const replaced = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "cli.ts"), "guide"], { cwd: root, stdin: new Response(JSON.stringify(threeSections)), stdout: "pipe", stderr: "ignore" });
+  const replacedOut = await new Response(replaced.stdout).text();
+  assert(
+    (await replaced.exited) === 0 &&
+      replacedOut === 'guide for feat-b: 3 sections, 3 of 4 files placed, 1 annotation\nwarning: 1 changed file is in no section and will be listed under "Everything else": long.txt\n',
+    `a second turndiff guide replaces the first and warns about the unplaced file (${replacedOut.trim()})`,
+  );
   await page.locator(".pill").waitFor({ timeout: 15_000 });
   await page.keyboard.press("r");
   const longCard = page.locator(".card", { has: page.locator(".card-head .path", { hasText: "long.txt" }) });
   const pinned = longCard.locator(".note");
   await pinned.waitFor({ timeout: 15_000 });
+  const rows = () => guideCard.locator(".guide-group-row").evaluateAll((els) => els.map((e) => e.textContent));
+  assert(JSON.stringify(await rows()) === JSON.stringify(["Scratch notes1 file0/1 viewed", "New functions1 file0/1 viewed", "Extras1 file0/1 viewed", "Everything else1 file0/1 viewed"]), `the unplaced file gets an "Everything else" row (${await rows()})`);
+  const heads = await page.locator(".group-head .group-head-title").allInnerTexts();
+  assert(JSON.stringify(heads) === JSON.stringify(["Scratch notes", "New functions", "Extras", "Everything else"]) && JSON.stringify(await paneOrder()) === JSON.stringify(["notes.md", "feat_b.py", "extra.txt", "long.txt"]), "the unplaced file comes last, under an Everything else header");
+  assert((await page.locator(".files .file-subgroup").last().innerText()) === "Everything else", "the rail groups it under Everything else too");
+  await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
+  await page.waitForTimeout(300);
+  await shot("guide-3-ayu");
+  await page.keyboard.press("t");
+  await page.waitForTimeout(300);
+  await shot("guide-3-github");
+  await page.keyboard.press("t");
   assert((await pinned.innerText()).includes("line 5"), "a note on an unrendered line is pinned to the top of its file");
   await pinned.getByRole("button", { name: "Reply" }).click();
   const pinnedReply = longCard.locator(".composer textarea");
@@ -294,13 +328,18 @@ try {
   await page.setViewportSize({ width: 1440, height: 1400 });
   await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
   const steps: string[] = [];
-  for (const key of ["]", "]", "]", "]", "]", "["]) {
+  for (const key of ["]", "]", "]", "]", "]", "]", "["]) {
     await page.keyboard.press(key);
     await page.locator(".hunk-mark").waitFor({ state: "attached" });
     steps.push(await page.locator(".hunk-mark").evaluate((m) => `${m.closest(".card")!.querySelector(".card-head .path")!.textContent} ${(m as HTMLElement).dataset.hunk}`));
+    if (steps.length === 4) {
+      const band = await page.locator(".hunk-mark").evaluate((m) => ({ bg: getComputedStyle(m).backgroundColor, width: m.getBoundingClientRect().width, card: m.closest(".card")!.getBoundingClientRect().width }));
+      assert(band.bg !== "rgba(0, 0, 0, 0)" && Math.abs(band.width - band.card) < 4, `the current hunk gets an accent band across the card (${band.bg})`);
+      await shot("hunk-band");
+    }
   }
   assert(
-    JSON.stringify(steps.slice(2)) === JSON.stringify(["long.txt old:10", "long.txt old:30", "long.txt old:50", "long.txt old:30"]),
+    JSON.stringify(steps.slice(3)) === JSON.stringify(["long.txt old:10", "long.txt old:30", "long.txt old:50", "long.txt old:30"]),
     `] reaches every hunk of the last file even when it cannot scroll further, and [ steps back (${steps.join(", ")})`,
   );
   await page.setViewportSize({ width: 1440, height: 900 });
