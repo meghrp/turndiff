@@ -48,10 +48,10 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
   };
 
   // One `turndiff review` waits at a time. A newer one retires the older, so a
-  // submission wakes exactly one agent, and the one that asked last.
+  // submission wakes exactly one agent, and the one that asked last. Waiter ids
+  // lead with the CLI's start time, so the order survives a server restart.
   let waiter: { id: string; resolve(r: WaitResult): void } | null = null;
-  let newest: string | null = null;
-  const retired = new Set<string>();
+  let newest: { id: string; startedAt: number } | null = null;
   // A submission no waiter has taken yet. The CLI re-polls every WAIT_MS and the
   // agent re-runs `turndiff review` after a timeout; either gap must not lose it.
   let pending: (WaitResponse & { atMs: number }) | null = null;
@@ -111,13 +111,13 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     return { markdown, delivered };
   }
 
-  async function wait(id: string): Promise<Response> {
-    if (retired.has(id)) return json({ error: "a newer turndiff review is waiting" }, 409);
-    if (newest !== id) {
-      if (newest) retired.add(newest);
+  async function wait(id: string, signal: AbortSignal): Promise<Response> {
+    const startedAt = Number(id.split("-")[0]);
+    if (newest && id !== newest.id) {
+      if (startedAt < newest.startedAt) return json({ error: "a newer turndiff review is waiting" }, 409);
       waiter?.resolve("superseded");
-      newest = id;
     }
+    newest = { id, startedAt };
     // The same CLI re-polling after its own request was cut off.
     waiter?.resolve(null);
     lastWaitAt = Date.now();
@@ -131,8 +131,15 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     const mine = { id, resolve: resolveWait };
     waiter = mine;
     const timer = setTimeout(() => resolveWait(null), WAIT_MS);
+    // A CLI that died mid-poll must not take the next submission with it; it goes to `pending` instead.
+    const gone = () => {
+      if (waiter === mine) waiter = null;
+      resolveWait(null);
+    };
+    signal.addEventListener("abort", gone);
     const r = await result;
     clearTimeout(timer);
+    signal.removeEventListener("abort", gone);
     if (waiter === mine) waiter = null;
     lastWaitAt = Date.now();
     if (r === "superseded") return json({ error: "a newer turndiff review is waiting" }, 409);
@@ -223,8 +230,8 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       },
       "/api/wait": route(async (req) => {
         const id = new URL(req.url).searchParams.get("waiter");
-        if (!id) throw new BadRequest("expected ?waiter=<id>");
-        return wait(id);
+        if (!id || !/^\d+-[\w-]+$/.test(id)) throw new BadRequest("expected ?waiter=<start ms>-<random>");
+        return wait(id, req.signal);
       }),
     },
     async fetch(req) {

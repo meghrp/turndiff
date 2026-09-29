@@ -54,7 +54,7 @@ test("state, views and the review round trip over HTTP", async () => {
   expect(afterPut.outdated).toEqual([]);
   expect((await fetch(`${server.url}/api/comments/k2`, { method: "PUT", body: JSON.stringify(comment) })).status).toBe(400);
 
-  const waiting = api<WaitResponse>("/api/wait?waiter=test");
+  const waiting = api<WaitResponse>("/api/wait?waiter=1-test");
   await Bun.sleep(100);
   expect((await api<RepoState>("/api/state")).agentWaiting).toBe(true);
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "request_changes", summary: "one nit" }) });
@@ -92,19 +92,45 @@ test("a review submitted while no agent waits reaches the next turndiff review o
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "approve", summary: "later" }) });
   expect(submitted.delivered).toBe(false);
   const started = Date.now();
-  const received = await api<WaitResponse>("/api/wait?waiter=test");
+  const received = await api<WaitResponse>("/api/wait?waiter=1-test");
   expect(Date.now() - started).toBeLessThan(1000);
   expect(received.markdown).toBe(submitted.markdown);
   expect(received.decision).toBe("approve");
 });
 
 test("a newer turndiff review takes over, so a submission wakes one agent", async () => {
-  const older = fetch(`${server.url}/api/wait?waiter=older`);
+  const older = fetch(`${server.url}/api/wait?waiter=2-older`);
   await Bun.sleep(100);
-  const newer = api<WaitResponse>("/api/wait?waiter=newer");
+  const newer = api<WaitResponse>("/api/wait?waiter=3-newer");
   expect((await older).status).toBe(409);
-  expect((await fetch(`${server.url}/api/wait?waiter=older`)).status).toBe(409);
+  expect((await fetch(`${server.url}/api/wait?waiter=2-older`)).status).toBe(409);
   const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "comment", summary: "once" }) });
   expect(submitted.delivered).toBe(true);
   expect((await newer).markdown).toBe(submitted.markdown);
+});
+
+test("a turndiff review that dies mid-wait leaves the next submission for its successor", async () => {
+  const abort = new AbortController();
+  const dying = fetch(`${server.url}/api/wait?waiter=4-dying`, { signal: abort.signal }).catch(() => null);
+  await Bun.sleep(100);
+  abort.abort();
+  await dying;
+  await Bun.sleep(3100);
+  expect((await api<RepoState>("/api/state")).agentWaiting).toBe(false);
+  const submitted = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "comment", summary: "after a crash" }) });
+  expect(submitted.delivered).toBe(false);
+  expect((await api<WaitResponse>("/api/wait?waiter=5-next")).markdown).toBe(submitted.markdown);
+});
+
+test("after a server restart an older turndiff review cannot take over from a newer one", async () => {
+  const restarted = await startServer({ paths: await repoPaths(sc.root), port: 0 });
+  try {
+    const newer = fetch(`${restarted.url}/api/wait?waiter=7-newer`).then((r) => r.json() as Promise<WaitResponse>);
+    await Bun.sleep(100);
+    expect((await fetch(`${restarted.url}/api/wait?waiter=6-older-reconnecting`)).status).toBe(409);
+    const submit = await fetch(`${restarted.url}/api/submit`, { method: "POST", body: JSON.stringify({ decision: "comment", summary: "restart order" }) });
+    expect((await newer).markdown).toBe(((await submit.json()) as SubmitResponse).markdown);
+  } finally {
+    restarted.stop();
+  }
 });

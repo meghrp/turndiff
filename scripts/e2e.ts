@@ -142,7 +142,7 @@ try {
   const box = (await target.boundingBox())!;
   assert(box.y > 38 && box.y + box.height < 900, "clicking a comment in the panel opens its view and scrolls it into sight");
 
-  const waiting = fetch(`${server.url}/api/wait?waiter=e2e`).then((r) => r.json() as Promise<WaitResponse>);
+  const waiting = fetch(`${server.url}/api/wait?waiter=1-e2e`).then((r) => r.json() as Promise<WaitResponse>);
   await page.waitForFunction(async () => (await (await fetch("/api/state")).json()).agentWaiting === true);
   await drawer.locator(".summary").fill("Two small things.");
   await drawer.getByRole("button", { name: "Request changes" }).click();

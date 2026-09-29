@@ -150,7 +150,7 @@ async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
   // background and the harness wakes them when it exits with the feedback.
   const timeoutMs = Number(str(args, "timeout") ?? 0) * 1000;
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
-  const waiter = crypto.randomUUID();
+  const waiter = `${Date.now()}-${crypto.randomUUID()}`;
   process.stderr.write("turndiff: waiting for the reviewer to submit\n");
   while (Date.now() < deadline) {
     let res: Response;

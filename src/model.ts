@@ -210,9 +210,9 @@ export interface WaitResponse {
 //   PUT    /api/summary                     body { summary } -> ReviewState
 //   GET    /api/feedback?decision=<d>       { markdown } preview of what submit would send
 //   POST   /api/submit                      body SubmitRequest -> SubmitResponse
-//   GET    /api/wait?waiter=<id>            WaitResponse, or 204 after ~25s (CLI long-poll). Each submission is
+//   GET    /api/wait?waiter=<ms>-<rand>     WaitResponse, or 204 after ~25s (CLI long-poll). Each submission is
 //                                           delivered once; one made while no CLI was polling waits up to 10 min.
-//                                           409 once a CLI with another id has started waiting.
+//                                           409 once a CLI that started later is waiting (ids lead with start ms).
 //   POST   /api/focus                       body { hash } (CLI only) -> sets RepoState.focus
 
 export function viewedKey(path: string, blob: Oid): string {
