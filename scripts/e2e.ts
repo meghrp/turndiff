@@ -83,8 +83,21 @@ try {
   assert((await page.locator(".seg button.on").innerText()) === "split", "u switches to split");
   await page.keyboard.press("u");
 
+  const bodyBg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const ayuBg = await bodyBg();
+  await page.keyboard.press("t");
+  assert((await page.evaluate(() => document.documentElement.dataset.theme)) === "github-dark" && (await bodyBg()) === "rgb(13, 17, 23)", "t switches to GitHub Dark colors");
+  const fonts = await page.evaluate(() => ({
+    chrome: getComputedStyle(document.querySelector(".toolbar")!).fontFamily,
+    code: getComputedStyle(document.querySelector(".card")!).getPropertyValue("--diffs-font-family"),
+  }));
+  assert(fonts.chrome.startsWith("system-ui") && fonts.code.includes("Geist Mono"), `chrome uses the system font, code uses Geist Mono (${fonts.chrome.split(",")[0]} / ${fonts.code.trim().split(",")[0]})`);
+
   await page.reload();
   await page.locator(".card").first().waitFor();
+  assert((await page.evaluate(() => document.documentElement.dataset.theme)) === "github-dark", "the theme survives a reload");
+  await page.keyboard.press("t");
+  assert((await bodyBg()) === ayuBg, "t switches back to Ayu Dark");
   assert(await firstCard.evaluate((el) => el.classList.contains("collapsed")), "viewed survives a reload");
   await firstCard.locator(".viewed input").click();
   await page.waitForFunction(() => !document.querySelector(".card")?.classList.contains("collapsed"));

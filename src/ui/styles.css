@@ -1,6 +1,7 @@
-/* Ayu Dark, values from @shikijs/themes ayu-dark (the theme the code is highlighted with). */
-:root {
-  color-scheme: dark;
+/* Two dark themes. Colors come from the Shiki theme each one highlights code
+   with; the comments name that theme's keys. */
+:root,
+:root[data-theme="ayu-dark"] {
   --bg: #0d1017; /* panel.background, sideBar.background */
   --bg-editor: #10141c; /* editor.background */
   --bg-raised: #141821; /* editorWidget.background */
@@ -11,9 +12,9 @@
   --active: #47526640; /* list.activeSelectionBackground */
   --fg: #bfbdb6; /* editor.foreground */
   --fg-dim: #5a6378; /* foreground */
-  --fg-mid: color-mix(in srgb, #bfbdb6 55%, #5a6378);
   --accent: #e6b450; /* focusBorder, button.background */
-  --accent-soft: #e6b4501a; /* inputOption.activeBackground */
+  --accent-hover: #deae4d; /* button.hoverBackground */
+  --on-accent: #0d1017; /* button.foreground */
   --add: #70bf56; /* editorGutter.addedBackground */
   --del: #f26d78; /* editorGutter.deletedBackground */
   --mod: #73b8ff; /* editorGutter.modifiedBackground */
@@ -21,6 +22,33 @@
   --error: #d95757; /* errorForeground */
   --selection: #3388ff40; /* editor.selectionBackground */
   --shadow: #00000080; /* widget.shadow */
+}
+:root[data-theme="github-dark"] {
+  --bg: #010409; /* sideBar.background */
+  --bg-editor: #0d1117; /* editor.background */
+  --bg-raised: #161b22; /* editorWidget.background */
+  --line: #6e76811a; /* editor.lineHighlightBackground */
+  --border: #21262d; /* Primer border.muted */
+  --border-strong: #30363d; /* input.border, panel.border */
+  --hover: #6e76811a; /* list.hoverBackground */
+  --active: #6e768166; /* list.activeSelectionBackground */
+  --fg: #e6edf3; /* editor.foreground */
+  --fg-dim: #7d8590; /* descriptionForeground */
+  --accent: #2f81f7; /* textLink.foreground */
+  --accent-hover: #1f6feb; /* focusBorder */
+  --on-accent: #ffffff; /* button.foreground */
+  --add: #3fb950; /* gitDecoration.addedResourceForeground */
+  --del: #f85149; /* gitDecoration.deletedResourceForeground */
+  --mod: #d29922; /* gitDecoration.modifiedResourceForeground */
+  --renamed: #a371f7; /* Primer done.fg */
+  --error: #f85149; /* errorForeground */
+  --selection: #2f81f733; /* Primer accent.muted */
+  --shadow: #010409cc; /* Primer shadow.large */
+}
+:root {
+  color-scheme: dark;
+  --fg-mid: color-mix(in srgb, var(--fg) 55%, var(--fg-dim));
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, monospace;
 
   --diffs-font-family: var(--mono);
@@ -31,17 +59,17 @@
   --diffs-deletion-color-override: var(--del);
   --diffs-modified-color-override: var(--accent);
   /* diffEditor.insertedTextBackground / removedTextBackground strength, not the library's heavier mix. */
-  --diffs-bg-addition-override: color-mix(in srgb, #10141c 90%, #70bf56);
-  --diffs-bg-addition-number-override: color-mix(in srgb, #10141c 86%, #70bf56);
-  --diffs-bg-addition-emphasis-override: #70bf5638;
-  --diffs-bg-deletion-override: color-mix(in srgb, #10141c 90%, #f26d78);
-  --diffs-bg-deletion-number-override: color-mix(in srgb, #10141c 86%, #f26d78);
-  --diffs-bg-deletion-emphasis-override: #f26d7838;
-  --diffs-bg-separator-override: #141821;
+  --diffs-bg-addition-override: color-mix(in srgb, var(--bg-editor) 90%, var(--add));
+  --diffs-bg-addition-number-override: color-mix(in srgb, var(--bg-editor) 86%, var(--add));
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--add) 22%, transparent);
+  --diffs-bg-deletion-override: color-mix(in srgb, var(--bg-editor) 90%, var(--del));
+  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--bg-editor) 86%, var(--del));
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--del) 22%, transparent);
+  --diffs-bg-separator-override: var(--bg-raised);
   --diffs-bg-context-override: var(--bg-editor);
-  --diffs-bg-hover-override: #161a24;
-  --diffs-bg-selection-override: #e6b4501f;
-  --diffs-bg-selection-number-override: #e6b45033;
+  --diffs-bg-hover-override: var(--line);
+  --diffs-bg-selection-override: color-mix(in srgb, var(--accent) 12%, transparent);
+  --diffs-bg-selection-number-override: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 * {
@@ -57,7 +85,7 @@ body,
 body {
   background: var(--bg-editor);
   color: var(--fg);
-  font: 12px/1.5 var(--mono);
+  font: 13px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 button,
@@ -75,13 +103,13 @@ select {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #5a637855; /* scrollbarSlider.background */
+  background: color-mix(in srgb, var(--fg-dim) 33%, transparent); 
   border: 3px solid transparent;
   border-radius: 6px;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: #5a637899;
+  background-color: color-mix(in srgb, var(--fg-dim) 60%, transparent);
 }
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
@@ -169,11 +197,11 @@ select {
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 .btn.primary:hover {
-  background: #deae4d; /* button.hoverBackground */
-  color: var(--bg);
+  background: var(--accent-hover);
+  color: var(--on-accent);
 }
 .btn.icon {
   width: 24px;
@@ -183,7 +211,7 @@ select {
 .btn.on,
 .toggle.on {
   color: var(--accent);
-  border-color: #e6b45055;
+  border-color: color-mix(in srgb, var(--accent) 33%, transparent);
   background: var(--accent-soft);
 }
 .seg {
@@ -206,12 +234,12 @@ select {
 .pill {
   height: 22px;
   border-radius: 11px;
-  border-color: #e6b45066;
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-soft);
   color: var(--accent);
 }
 .pill:hover {
-  background: #e6b45033;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .link {
   border: 0;
@@ -257,7 +285,7 @@ select {
   padding: 0 4px;
   border-radius: 8px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
   font-size: 10px;
   display: inline-flex;
   align-items: center;
@@ -395,7 +423,7 @@ select {
 .tl {
   position: absolute;
   width: 1px;
-  background: #5a637880; /* tree.indentGuidesStroke, softened */
+  background: color-mix(in srgb, var(--fg-dim) 50%, transparent); 
   pointer-events: none;
 }
 .tl-v {
@@ -484,7 +512,7 @@ select {
   padding: 0 4px;
   border-radius: 3px;
   color: var(--accent);
-  border: 1px solid #e6b45055;
+  border: 1px solid color-mix(in srgb, var(--accent) 33%, transparent);
 }
 .turn-n {
   flex: none;
@@ -512,10 +540,10 @@ select {
   outline: none;
 }
 .filter::placeholder {
-  color: #5a637899;
+  color: color-mix(in srgb, var(--fg-dim) 60%, transparent);
 }
 .filter:focus {
-  border-color: #e6b450b3;
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
 }
 .file-list {
   flex: 1 1 auto;
@@ -559,7 +587,7 @@ select {
 }
 .check.on {
   color: var(--add);
-  border-color: #70bf5666;
+  border-color: color-mix(in srgb, var(--add) 40%, transparent);
 }
 .rail-empty {
   padding: 8px 12px;
@@ -684,7 +712,7 @@ select {
 }
 .replay.conflict {
   color: var(--del);
-  border-color: #f26d7866;
+  border-color: color-mix(in srgb, var(--del) 40%, transparent);
 }
 .card {
   margin-bottom: 12px;
@@ -773,7 +801,7 @@ select {
 /* Inline comments */
 .comment,
 .composer {
-  font: 12px/1.55 var(--mono);
+  font: 13px/1.5 var(--sans);
   color: var(--fg);
   margin: 6px 12px 6px 12px;
   max-width: 820px;
@@ -791,7 +819,7 @@ select {
   transition: background 300ms;
 }
 .comment.flash {
-  background: #e6b45026;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .comment-actions {
   flex: none;
@@ -829,11 +857,11 @@ select {
 }
 .composer textarea:focus,
 .summary:focus {
-  border-color: #e6b450b3;
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
 }
 .composer textarea::placeholder,
 .summary::placeholder {
-  color: #5a637899;
+  color: color-mix(in srgb, var(--fg-dim) 60%, transparent);
 }
 .composer-foot {
   display: flex;
@@ -932,7 +960,7 @@ select {
 }
 .tag.warn {
   color: var(--accent);
-  border-color: #e6b45055;
+  border-color: color-mix(in srgb, var(--accent) 33%, transparent);
 }
 .rsnippet {
   margin: 4px 0;
@@ -980,7 +1008,7 @@ select {
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: #0d101799;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1009,4 +1037,19 @@ kbd {
   flex: none;
   color: var(--accent);
   font: inherit;
+}
+
+/* Code-shaped text keeps the code font. */
+.sha,
+.path,
+.rloc,
+kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.help-theme {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
 }

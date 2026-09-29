@@ -2,6 +2,12 @@ import { useCallback, useState } from "react";
 
 const PREFIX = "turndiff:";
 
+export const THEMES = {
+  "ayu-dark": { label: "Ayu Dark", shiki: "ayu-dark" },
+  "github-dark": { label: "GitHub Dark", shiki: "github-dark-default" },
+} as const;
+export type ThemeName = keyof typeof THEMES;
+
 export function usePref<T>(key: string, initial: T): [T, (v: T | ((old: T) => T)) => void] {
   const [value, setValue] = useState<T>(() => {
     try {

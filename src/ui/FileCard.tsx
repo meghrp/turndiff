@@ -4,7 +4,7 @@ import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from "@pierre
 import type { Anchor, Comment, FileChange, Section } from "../model.ts";
 import { api } from "./api.ts";
 import { anchorKey, lineInHunks, lineTexts, splitPath, toPierreSide, toSide } from "./lines.ts";
-import { drafts } from "./prefs.ts";
+import { drafts, THEMES, type ThemeName } from "./prefs.ts";
 
 export interface FileEntry {
   key: string;
@@ -30,6 +30,7 @@ export interface CardActions {
 
 export interface DisplayPrefs {
   diffStyle: "unified" | "split";
+  theme: ThemeName;
   wrap: boolean;
 }
 
@@ -106,7 +107,7 @@ export const FileCard = memo(function FileCard({
 
   const options = useMemo<FileDiffOptions<Meta, undefined>>(
     () => ({
-      theme: "ayu-dark",
+      theme: THEMES[prefs.theme].shiki,
       themeType: "dark",
       diffStyle: prefs.diffStyle,
       overflow: prefs.wrap ? "wrap" : "scroll",
@@ -128,7 +129,7 @@ export const FileCard = memo(function FileCard({
         };
       },
     }),
-    [prefs.diffStyle, prefs.wrap, file],
+    [prefs.diffStyle, prefs.wrap, prefs.theme, file],
   );
 
   const annotations = useMemo<DiffLineAnnotation<Meta>[]>(() => {

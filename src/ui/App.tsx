@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import { hashToTarget, targetToHash, type Comment, type RepoState, type ReviewState, type Target, type View } from "../model.ts";
 import { api } from "./api.ts";
-import { usePref } from "./prefs.ts";
+import { THEMES, usePref, type ThemeName } from "./prefs.ts";
 import { defaultTarget, sameTarget, sharedPrefix } from "./stack.ts";
 import { Dimmed } from "./names.tsx";
 import { commentsFor, indexComments } from "./lines.ts";
@@ -31,6 +31,11 @@ export function App() {
   const [wrap, setWrap] = usePref("wrap", false);
   const [ws, setWs] = usePref("ignoreWhitespace", false);
   const [railWidth, setRailWidth] = usePref("railWidth", 300);
+  const [theme, setTheme] = usePref<ThemeName>("theme", "ayu-dark");
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+  const nextTheme = useCallback(() => setTheme((t) => (t === "ayu-dark" ? "github-dark" : "ayu-dark")), [setTheme]);
   const [railOpen, setRailOpen] = useState(() => innerWidth >= NARROW);
   const pane = useRef<DiffPaneHandle>(null);
   const filter = useRef<HTMLInputElement>(null);
@@ -218,6 +223,7 @@ export function App() {
         k: () => entries[Math.max(0, at - 1)] && scrollToFile(entries[Math.max(0, at - 1)]!),
         v: () => entries[at] && void toggleViewed(entries[at]!),
         u: () => setDiffStyle((s) => (s === "unified" ? "split" : "unified")),
+        t: nextTheme,
         r: reload,
         "/": () => {
           setRailOpen(true);
@@ -238,7 +244,7 @@ export function App() {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [entries, activeKey, scrollToFile, toggleViewed, reload, setDiffStyle]);
+  }, [entries, activeKey, scrollToFile, toggleViewed, reload, setDiffStyle, nextTheme]);
 
   if (!repo) {
     return (
@@ -325,6 +331,9 @@ export function App() {
       <button className={`toggle${ws ? " on" : ""}`} aria-pressed={ws} onClick={() => setWs((w) => !w)} title="Ignore whitespace changes">
         ws
       </button>
+      <button className={`toggle${panel === "help" ? " on" : ""}`} onClick={() => setPanel((p) => (p === "help" ? null : "help"))} title="Theme and shortcuts  ?">
+        ?
+      </button>
       <button
         className={`btn review-btn${panel === "review" ? " on" : ""}`}
         onClick={() => setPanel((p) => (p === "review" ? null : "review"))}
@@ -364,7 +373,7 @@ export function App() {
           entries={entries}
           review={review}
           viewed={viewed}
-          prefs={{ diffStyle, wrap }}
+          prefs={{ diffStyle, wrap, theme }}
           prefix={prefix}
           toolbar={toolbar}
           busy={loading}
@@ -392,7 +401,7 @@ export function App() {
       {panel === "review" && (
         <ReviewPanel repo={repo} prefix={prefix} review={review} onReview={setReview} onOpen={openComment} onClose={() => setPanel(null)} />
       )}
-      {panel === "help" && <Help onClose={() => setPanel(null)} />}
+      {panel === "help" && <Help theme={theme} onTheme={setTheme} onClose={() => setPanel(null)} />}
     </div>
   );
 }
@@ -401,6 +410,7 @@ const KEYS: [string, string][] = [
   ["j / k", "next / previous file"],
   ["v", "toggle viewed"],
   ["u", "unified / split"],
+  ["t", "switch theme"],
   ["r", "reload the view"],
   ["/", "filter files"],
   ["b", "toggle sidebar"],
@@ -410,10 +420,20 @@ const KEYS: [string, string][] = [
   ["?", "this list"],
 ];
 
-function Help({ onClose }: { onClose(): void }) {
+function Help({ theme, onTheme, onClose }: { theme: ThemeName; onTheme(t: ThemeName): void; onClose(): void }) {
   return (
     <div className="scrim" onClick={onClose}>
-      <div className="help" role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+      <div className="help" role="dialog" aria-label="Theme and keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+        <div className="help-theme">
+          <span className="dim">Theme</span>
+          <div className="seg" role="group" aria-label="Theme">
+            {(Object.keys(THEMES) as ThemeName[]).map((t) => (
+              <button key={t} className={t === theme ? "on" : ""} aria-pressed={t === theme} onClick={() => onTheme(t)}>
+                {THEMES[t].label}
+              </button>
+            ))}
+          </div>
+        </div>
         {KEYS.map(([k, d]) => (
           <div key={k} className="help-row">
             <kbd>{k}</kbd>
