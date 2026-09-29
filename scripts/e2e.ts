@@ -344,6 +344,19 @@ try {
   );
   await page.setViewportSize({ width: 1440, height: 900 });
 
+  // In tree order no group header sits above a file, so its card top stays below the tracker's edge.
+  await page.keyboard.press("g");
+  await page.waitForFunction(() => document.querySelector(".card .card-head .path")?.textContent === "extra.txt");
+  await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
+  await page.locator(".files .row.file", { hasText: "extra.txt" }).click();
+  await page.keyboard.press("]");
+  await page.locator(".hunk-mark").waitFor({ state: "attached" });
+  await page.waitForTimeout(300);
+  const marked = await page.locator(".hunk-mark").evaluate((m) => m.closest(".card")!.querySelector(".card-head .path")!.textContent);
+  const selected = await page.locator(".files .row.file.active .fname").evaluate((el) => el.firstChild?.textContent);
+  assert(marked === "feat_b.py" && selected === "feat_b.py", `] into the next file selects that file in the rail (${marked} / ${selected})`);
+  await page.keyboard.press("g");
+
   await page.locator(".row", { hasText: "entire stack" }).click();
   await waitTitle(page, "Entire stack");
   const railActive = async () => {

@@ -236,6 +236,12 @@ export const DiffPane = forwardRef<
         const reached = (row: HTMLElement) => {
           hunkNav.current.mark = markHunk(next.card, row, next.h);
           hunkNav.current.current = { key: next.entry.key, index: next.h.index, scrollTop: s.scrollTop };
+          // The hunk's file may start above the edge the tracker reads, so select it the way a jump does.
+          chosen.current = next.entry.key;
+          if (activeRef.current !== next.entry.key) {
+            activeRef.current = next.entry.key;
+            onActive(next.entry.key);
+          }
         };
         let tries = 0;
         // Rows far from the viewport are not rendered yet: scroll to an estimate, then re-aim at the real row.
@@ -253,7 +259,7 @@ export const DiffPane = forwardRef<
         aim();
       },
     }),
-    [entries, perEntry, stickyTop, collapseOverride, viewed],
+    [entries, perEntry, stickyTop, collapseOverride, viewed, onActive],
   );
 
   const jumpRef = useRef(jump);
