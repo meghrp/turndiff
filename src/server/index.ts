@@ -81,6 +81,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       agentWaiting: agentAttached(),
       focus,
       version,
+      guidesVersion: "",
     };
   }
 

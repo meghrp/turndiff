@@ -76,6 +76,8 @@ export interface RepoState {
   focus: { hash: string; at: number } | null;
   /** Changes whenever refs or the worktree change. The UI compares it to offer a reload. */
   version: string;
+  /** Changes whenever a guide is written or removed. The UI refetches /api/guides when it does. */
+  guidesVersion: string;
 }
 
 export type Target =
@@ -167,6 +169,66 @@ export interface Comment {
   updatedAt: string;
 }
 
+/**
+ * The author's walkthrough of one branch, written by the agent that made the
+ * change with `turndiff guide`. One per branch; writing again replaces it.
+ * It is advisory: the diff stays the source of truth, and every part of the
+ * guide says when the code it describes has changed since.
+ */
+export interface Guide {
+  branch: string;
+  /** Who wrote it, as they named themselves (a model id, a person). */
+  author: string | null;
+  writtenAt: string;
+  /** Branch tip when written. Informational: staleness is judged per file and per annotation by blob. */
+  head: Oid;
+  /** Why the branch exists, in one or two sentences of markdown. */
+  intent: string;
+  /** Reading order: the heart of the change first, its consequences next, glue last. */
+  sections: GuideSection[];
+  annotations: Annotation[];
+}
+
+export interface GuideSection {
+  /** Names a concept, not a file. */
+  title: string;
+  /** Markdown: what changed, why, and where the risk is. */
+  overview: string;
+  files: GuideFile[];
+}
+
+export interface GuideFile {
+  path: string;
+  /** One or two sentences of markdown. */
+  summary: string;
+  /** New-side blob when the guide was written, null for a deletion. The summary is stale once the file's blob differs. */
+  blob: Oid | null;
+}
+
+/** The author's note on a line range. It renders just above the lines it covers wherever `anchor.blob` is diffed on `anchor.side`. */
+export interface Annotation {
+  id: string;
+  anchor: Anchor;
+  /** Markdown, one or two sentences: what this code does. */
+  summary: string;
+  /** Markdown: why it is written this way. Shown on demand. */
+  rationale: string | null;
+}
+
+/**
+ * What an agent writes and pipes to `turndiff guide`. The CLI validates it
+ * against the branch diff, resolves blobs and stores a Guide.
+ *   annotation.lines: [start, end], 1-based and inclusive, in the numbering of
+ *   `side` (default "new": the file as it is at the branch tip, or on disk when
+ *   the branch is checked out; "old": the file at the branch base).
+ */
+export interface GuideInput {
+  author?: string;
+  intent: string;
+  sections: { title: string; overview: string; files: { path: string; summary: string }[] }[];
+  annotations?: { path: string; side?: Side; lines: [number, number]; summary: string; rationale?: string }[];
+}
+
 export type Decision = "approve" | "request_changes" | "comment";
 
 export interface ReviewState {
@@ -214,6 +276,7 @@ export interface WaitResponse {
 //                                           delivered once; one made while no CLI was polling waits up to 10 min.
 //                                           409 once a CLI that started later is waiting (ids lead with start ms).
 //   POST   /api/focus                       body { hash } (CLI only) -> sets RepoState.focus
+//   GET    /api/guides                      Guide[] for every branch that has one
 
 export function viewedKey(path: string, blob: Oid): string {
   return `${path}\0${blob}`;
