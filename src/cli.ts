@@ -7,7 +7,8 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { git, gitOrNull, repoPaths, type RepoPaths } from "./git/exec.ts";
+import { currentBranch, git, gitOrNull, repoPaths, type RepoPaths } from "./git/exec.ts";
+import { checkGuide, removeGuide, writeGuide } from "./git/guides.ts";
 import { deleteSession, listSessions, recordHook } from "./git/snapshots.ts";
 import { startServer } from "./server/index.ts";
 import { clearState, codeStamp, ensureDaemon, readState, stopDaemon, writeState } from "./server/daemon.ts";
@@ -20,6 +21,8 @@ Usage:
   turndiff review [target]      Open it, wait for the reviewer to submit, print the feedback markdown.
                                 Agents run it in the background; a newer review replaces an older waiting one.
                                 A bare branch name works as a target: turndiff review feat-a
+  turndiff guide [<file>|-]     Store the author's review guide for a branch (JSON from the file or stdin).
+                                --branch <name> (default: checked out), --remove to drop it. See turndiff guide --help.
   turndiff stop                 Stop this worktree's review server.
   turndiff hook                 Claude Code hook entrypoint (hook JSON on stdin).
   turndiff install [--skill-only]  Register the hooks in ~/.claude/settings.json and link the skill.
@@ -41,13 +44,55 @@ Options:
   --port <n>         Port for a newly started server (default: random).
 `;
 
+const GUIDE_HELP = `turndiff guide: store the author's review guide for a branch
+
+Usage:
+  turndiff guide [<file>|-] [--branch <name>]   Read the guide JSON from <file> or stdin and store it.
+  turndiff guide --remove [--branch <name>]     Drop the branch's guide.
+
+The branch defaults to the checked-out one; its diff includes uncommitted changes.
+Writing again replaces the branch's guide. In a stack, write one guide per branch.
+The guide is checked against the branch diff; every problem is listed and nothing is stored.
+
+Input:
+  {
+    "author": "claude-opus-4",                  optional: who wrote it
+    "intent": "Why the branch exists, 1-2 sentences.",
+    "sections": [
+      {
+        "title": "Concept, not a filename",
+        "overview": "2-6 sentences: what changed, why, implications, risk.",
+        "files": [{ "path": "src/x.ts", "summary": "What this file's change does, 1-2 sentences." }]
+      }
+    ],
+    "annotations": [                             optional: notes beside the code
+      {
+        "path": "src/x.ts",
+        "lines": [12, 18],                       1-based, inclusive
+        "side": "new",                           optional: "new" (default, the file at the tip or on disk)
+                                                 or "old" (the file at the branch base, for removed code)
+        "summary": "What this code does, 1-2 sentences.",
+        "rationale": "Why it is written this way."   optional, shown on demand
+      }
+    ]
+  }
+  All text is markdown. Paths are new paths as the diff shows them.
+
+Writing rules:
+  - 2 to 6 sections. Titles name concepts, never files.
+  - Order: the heart of the change first, its consequences next, glue last.
+  - Place every changed file exactly once. Unplaced files are listed under "Everything else".
+  - Annotate only what a reviewer would not see from the code itself. The rationale says why, not what.
+  - Be honest about risk and uncertainty: say what you did not test and what you are unsure of.
+`;
+
 /** Flags that never take a value, so a bare word after them is a branch name. */
-const SWITCHES = new Set(["open", "no-open", "working", "stack", "since-review", "all", "skill-only", "help"]);
+const SWITCHES = new Set(["open", "no-open", "working", "stack", "since-review", "all", "skill-only", "help", "remove"]);
 
 interface Args {
   cmd: string;
   flags: Map<string, string | true>;
-  /** A bare word after the command, read as a branch name. */
+  /** A bare word after the command, read as a branch name (for `guide`, the input file). */
   branch: string | null;
 }
 
@@ -245,6 +290,40 @@ async function cmdClean(args: Args, paths: RepoPaths): Promise<number> {
   return 0;
 }
 
+async function cmdGuide(args: Args, paths: RepoPaths): Promise<number> {
+  const branch = str(args, "branch") ?? (await currentBranch(paths.root));
+  if (!branch) throw new Error("detached HEAD: pass --branch <name>");
+  if (args.flags.has("remove")) {
+    process.stdout.write((await removeGuide(paths, branch)) ? `removed the guide for ${branch}\n` : `no guide for ${branch}\n`);
+    return 0;
+  }
+  const file = args.branch ?? "-";
+  if (file === "-" && process.stdin.isTTY) throw new Error("pipe the guide JSON on stdin or pass a file (turndiff guide --help)");
+  const text = file === "-" ? await Bun.stdin.text() : await readFile(file, "utf8");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    process.stderr.write(`turndiff guide: the input is not valid JSON: ${(e as Error).message}\n`);
+    return 1;
+  }
+  const r = await checkGuide(paths, branch, raw);
+  if (!r.ok) {
+    const n = r.errors.length;
+    process.stderr.write(`turndiff guide: ${n} problem${n === 1 ? "" : "s"}, nothing stored:\n${r.errors.map((e) => `  ${e}\n`).join("")}`);
+    return 1;
+  }
+  const g = r.guide;
+  await writeGuide(paths, g);
+  const placed = g.sections.reduce((n, s) => n + s.files.length, 0);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  process.stdout.write(
+    `guide for ${branch}: ${plural(g.sections.length, "section")}, ${placed} of ${plural(r.changedFiles, "file")} placed, ${plural(g.annotations.length, "annotation")}\n` +
+      r.warnings.map((w) => `warning: ${w}\n`).join(""),
+  );
+  return 0;
+}
+
 async function cmdInstall(args: Args): Promise<number> {
   const home = homedir();
   const repoDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -282,7 +361,7 @@ async function cmdInstall(args: Args): Promise<number> {
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.cmd === "help" || args.flags.has("help") || args.cmd === "-h") {
-    process.stdout.write(HELP);
+    process.stdout.write(args.cmd === "guide" ? GUIDE_HELP : HELP);
     return 0;
   }
   if (args.cmd === "hook") return cmdHook();
@@ -299,6 +378,8 @@ async function main(): Promise<number> {
       return cmdStop(paths);
     case "clean":
       return cmdClean(args, paths);
+    case "guide":
+      return cmdGuide(args, paths);
     default:
       process.stderr.write(`unknown command: ${args.cmd}\n\n${HELP}`);
       return 1;
