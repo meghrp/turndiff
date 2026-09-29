@@ -252,7 +252,7 @@ export const FileCard = memo(function FileCard({
           Viewed
         </label>
       </header>
-      {summary && !collapsed && <Markdown className="card-summary" text={summary} />}
+      {summary && !collapsed && near.seen && <Markdown className="card-summary" text={summary} />}
       {body()}
     </section>
   );

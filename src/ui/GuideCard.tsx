@@ -1,3 +1,4 @@
+import { memo, useState } from "react";
 import type { Guide, GuideFile } from "../model.ts";
 import { EVERYTHING_ELSE } from "./guides.ts";
 import { sideKey, splitPath } from "./lines.ts";
@@ -15,7 +16,7 @@ export interface GuideControls {
 }
 
 /** The author's walkthrough of one branch, at the top of its section. */
-export function GuideCard({
+export const GuideCard = memo(function GuideCard({
   guide,
   entries,
   viewed,
@@ -72,7 +73,10 @@ export function GuideCard({
       )}
     </div>
   );
-}
+});
+
+/** File rows a group shows before "Show N more files", so a large guide does not push the diff far down. */
+const GROUP_ROWS = 8;
 
 function Group({
   title,
@@ -87,6 +91,8 @@ function Group({
   onFile(e: FileEntry): void;
   children?: React.ReactNode;
 }) {
+  const [all, setAll] = useState(false);
+  const shown = all || files.length <= GROUP_ROWS + 2 ? files : files.slice(0, GROUP_ROWS);
   const present = files.flatMap(({ e }) => (e ? [e] : []));
   const done = present.filter((e) => viewed.has(fileViewedKey(e))).length;
   return (
@@ -100,7 +106,7 @@ function Group({
       </div>
       {children}
       <div className="guide-files">
-        {files.map(({ f, e }) => {
+        {shown.map(({ f, e }) => {
           const path = f?.path ?? e!.file.path;
           const [dir, name] = splitPath(path);
           const changed = f && e && f.blob !== e.file.newBlob;
@@ -137,6 +143,11 @@ function Group({
           );
         })}
       </div>
+      {shown.length < files.length && (
+        <button className="link guide-more" onClick={() => setAll(true)}>
+          Show {files.length - shown.length} more files
+        </button>
+      )}
     </div>
   );
 }

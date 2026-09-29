@@ -1293,3 +1293,7 @@ kbd {
     opacity: 0;
   }
 }
+.guide-more {
+  margin-top: 2px;
+  font-size: 11px;
+}
