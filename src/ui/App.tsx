@@ -26,6 +26,7 @@ export function App() {
   const [viewError, setViewError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [review, setReview] = useState<ReviewState>(EMPTY_REVIEW);
+  const [submittedMarkdown, setSubmittedMarkdown] = useState<string | null>(null);
   const [panel, setPanel] = useState<"review" | "help" | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [diffStyle, setDiffStyle] = usePref<"unified" | "split">("diffStyle", "unified");
@@ -100,11 +101,13 @@ export function App() {
 
   const guidesVersion = repo?.guidesVersion;
   useEffect(() => {
+    let active = true;
     if (guidesVersion !== undefined)
       api
         .guides()
-        .then(setGuides)
+        .then((g) => active && setGuides(g))
         .catch(() => {});
+    return () => { active = false; };
   }, [guidesVersion]);
 
   useEffect(() => {
@@ -434,7 +437,7 @@ export function App() {
         </main>
       )}
       {panel === "review" && (
-        <ReviewPanel repo={repo} prefix={prefix} review={review} onReview={setReview} onOpen={openComment} onClose={() => setPanel(null)} />
+        <ReviewPanel repo={repo} prefix={prefix} review={review} submittedMarkdown={submittedMarkdown} onSubmitted={setSubmittedMarkdown} onReview={setReview} onOpen={openComment} onClose={() => setPanel(null)} />
       )}
       {panel === "help" && <Help theme={theme} onTheme={setTheme} onClose={() => setPanel(null)} />}
     </div>

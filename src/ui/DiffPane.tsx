@@ -71,7 +71,10 @@ export const DiffPane = forwardRef<
     const m = new Map<string, string>();
     for (const s of view.sections) {
       const g = guideFor(view, s, guides);
-      for (const f of g?.sections.flatMap((x) => x.files) ?? []) m.set(`${s.id}\0${f.path}`, f.summary);
+      const blobs = new Map(s.files.map((f) => [f.path, f.newBlob]));
+      for (const f of g?.sections.flatMap((x) => x.files) ?? []) {
+        if (blobs.has(f.path) && blobs.get(f.path) === f.blob) m.set(`${s.id}\0${f.path}`, f.summary);
+      }
     }
     return m;
   }, [view, guides]);

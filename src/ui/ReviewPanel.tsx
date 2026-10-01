@@ -13,6 +13,8 @@ export function ReviewPanel({
   repo,
   prefix,
   review,
+  submittedMarkdown,
+  onSubmitted,
   onReview,
   onOpen,
   onClose,
@@ -20,6 +22,8 @@ export function ReviewPanel({
   repo: RepoState;
   prefix: string;
   review: ReviewState;
+  submittedMarkdown: string | null;
+  onSubmitted(markdown: string): void;
   onReview(r: ReviewState): void;
   onOpen(c: Comment): void;
   onClose(): void;
@@ -52,10 +56,13 @@ export function ReviewPanel({
     try {
       await flush();
       const res = await api.submit(d, summary);
+      onSubmitted(res.markdown);
       if (res.delivered) setStatus({ kind: "ok", text: "Sent to the agent." });
       else if (await copyText(res.markdown)) setStatus({ kind: "ok", text: "No agent waiting. Copied; the next turndiff review also gets it." });
-      else setStatus({ kind: "err", text: "No agent was waiting and the clipboard is unavailable. Use Copy." });
-      onReview(await api.review());
+      else setStatus({ kind: "err", text: "No agent was waiting and the clipboard is unavailable. Use Copy submitted." });
+      const next = await api.review();
+      setSummary(next.summary);
+      onReview(next);
     } catch (e) {
       setStatus({ kind: "err", text: (e as Error).message });
     } finally {
@@ -66,7 +73,7 @@ export function ReviewPanel({
   const copy = async () => {
     try {
       await flush();
-      const { markdown } = await api.feedback("comment");
+      const markdown = hasDraft || submittedMarkdown === null ? (await api.feedback("comment")).markdown : submittedMarkdown;
       setStatus((await copyText(markdown)) ? { kind: "ok", text: "Feedback copied." } : { kind: "err", text: "Clipboard unavailable." });
     } catch (e) {
       setStatus({ kind: "err", text: (e as Error).message });
@@ -74,6 +81,7 @@ export function ReviewPanel({
   };
 
   const outdated = new Set(review.outdated);
+  const hasDraft = review.comments.length > 0 || summary.length > 0;
   const order = repo.branches.map((b) => b.name);
   const groups = new Map<string | null, Comment[]>();
   for (const c of review.comments) groups.set(c.origin.branch, [...(groups.get(c.origin.branch) ?? []), c]);
@@ -88,8 +96,8 @@ export function ReviewPanel({
           {keys.length > 1 ? ` on ${keys.length} branches` : ""}
         </span>
         <span className="grow" />
-        <button className="btn" onClick={() => void copy()} title="Copy the feedback as markdown">
-          Copy
+        <button className="btn" disabled={busy} onClick={() => void copy()} title="Copy the feedback as markdown">
+          {hasDraft || submittedMarkdown === null ? "Copy" : "Copy submitted"}
         </button>
         <button className="btn icon" onClick={onClose} aria-label="Close review">
           ×
@@ -131,6 +139,7 @@ export function ReviewPanel({
           placeholder="Summary for the agent (optional)"
           value={summary}
           rows={4}
+          disabled={busy}
           onChange={(e) => onSummary(e.target.value)}
         />
         {status ? (

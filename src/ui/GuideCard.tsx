@@ -51,7 +51,7 @@ export const GuideCard = memo(function GuideCard({
   const diffed = new Set(entries.flatMap((e) => [e.file.newBlob && sideKey("new", e.file.path, e.file.newBlob), e.file.oldBlob && sideKey("old", e.file.oldPath ?? e.file.path, e.file.oldBlob)]));
   const staleNotes = guide.annotations.filter((a) => !diffed.has(sideKey(a.anchor.side, a.anchor.path, a.anchor.blob))).length;
   const { collapsed } = controls;
-  const toggle = (title: string) => setOpen((o) => (o.includes(title) ? o.filter((t) => t !== title) : [...o, title]));
+  const toggle = (id: string) => setOpen((o) => (o.includes(id) ? o.filter((t) => t !== id) : [...o, id]));
   return (
     <div className={`guide${collapsed ? " collapsed" : ""}`} data-guide={guide.branch}>
       <div className="guide-head">
@@ -75,8 +75,8 @@ export const GuideCard = memo(function GuideCard({
         <div className="guide-body">
           <Markdown className="guide-intent" text={guide.intent} />
           <div className="guide-groups">
-            {groups.map((g) => (
-              <Group key={g.title} group={g} open={open.includes(g.title)} onToggle={() => toggle(g.title)} viewed={viewed} onFile={onFile}>
+            {groups.map((g, i) => (
+              <Group key={`${i}:${g.title}`} group={g} open={open.includes(`${i}:${g.title}`)} onToggle={() => toggle(`${i}:${g.title}`)} viewed={viewed} onFile={onFile}>
                 {g.overview && <Markdown className="guide-overview" text={g.overview} />}
               </Group>
             ))}
@@ -126,7 +126,7 @@ function Group({
         title={present[0] ? `Go to ${group.title}` : undefined}
         onClick={jump}
         onKeyDown={(ev) => {
-          if (ev.key === "Enter" || ev.key === " ") {
+          if (ev.target === ev.currentTarget && (ev.key === "Enter" || ev.key === " ")) {
             ev.preventDefault();
             jump();
           }

@@ -1,7 +1,3 @@
-// Review guides the agent writes with `turndiff guide`: parsed and checked
-// against the branch diff here, at the CLI boundary, then stored one file per
-// branch in the common git dir so every worktree's server sees them.
-
 import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";

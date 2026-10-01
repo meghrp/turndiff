@@ -3,7 +3,7 @@
 // a reload, the review panel, and a submit that a waiting CLI receives.
 // Usage: bun run e2e [screenshot dir, default /tmp/turndiff-shots]
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import { buildScenario } from "../src/scenario.ts";
@@ -21,7 +21,7 @@ function assert(ok: unknown, what: string): asserts ok {
 
 const { root } = await buildScenario();
 const server = await startServer({ paths: await repoPaths(root), port: 0 });
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL, headless: true });
 const errors: string[] = [];
 
 try {
@@ -156,6 +156,33 @@ try {
   assert((await drawer.locator(".status-line").innerText()).includes("Sent"), "the panel confirms delivery");
   await shot("submitted");
 
+  await page.waitForFunction(() => (document.querySelector(".drawer .summary") as HTMLTextAreaElement)?.value === "");
+  assert(true, "submission clears the panel summary before the next review");
+  await page.waitForFunction(async () => !(await (await fetch("/api/state")).json()).agentWaiting);
+  await Bun.sleep(3100);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("clipboard denied"); } } });
+    document.execCommand = () => false;
+  });
+  await drawer.locator(".summary").fill("Clipboard recovery review.");
+  const recoveryResponse = page.waitForResponse((r) => r.url().endsWith("/api/submit") && r.request().method() === "POST");
+  await drawer.getByRole("button", { name: "Comment", exact: true }).click();
+  const recovery = await (await recoveryResponse).json() as { markdown: string };
+  await drawer.locator(".status-line.err", { hasText: "clipboard is unavailable" }).waitFor({ timeout: 5000 }).catch(async (e) => {
+    throw new Error(`clipboard failure recovery: ${JSON.stringify(recovery)}; status: ${await drawer.locator(".status-line").innerText()}; ${e}`);
+  });
+  await drawer.getByRole("button", { name: "Close review" }).click();
+  await page.locator(".review-btn").click();
+  await drawer.getByRole("button", { name: "Copy submitted", exact: true }).waitFor();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => {
+      (window as Window & { copiedReview?: string }).copiedReview = text;
+    } } });
+  });
+  await drawer.getByRole("button", { name: "Copy submitted", exact: true }).click();
+  await drawer.locator(".status-line.ok", { hasText: "Feedback copied." }).waitFor();
+  assert(await page.evaluate(() => (window as Window & { copiedReview?: string }).copiedReview) === recovery.markdown && recovery.markdown.includes("Clipboard recovery review."), "submitted feedback can be copied after closing and reopening the panel when the clipboard failed");
+
   await page.keyboard.press("Escape");
   await writeFile(join(root, "feat_b.py"), "def f():\n    return 1\n\ndef g():\n    return 2\n\ndef h():\n    return 3\n");
   const guideInput = {
@@ -201,6 +228,14 @@ try {
   const headTop = (await page.locator(".group-head").first().evaluate((h) => h.getBoundingClientRect().top)) - (await scrollerY());
   assert(Math.abs(headTop) < 4, `clicking a section row scrolls to its group in the diff (${Math.round(headTop)}px)`);
   await page.locator(".scroller").evaluate((s) => s.scrollTo({ top: 0 }));
+  const keyboardChevron = guideCard.getByRole("button", { name: "Expand New functions", exact: true });
+  await keyboardChevron.focus();
+  await keyboardChevron.press("Enter");
+  await guideCard.getByRole("button", { name: "Collapse New functions", exact: true }).waitFor();
+  assert((await page.locator(".scroller").evaluate((s) => s.scrollTop)) === 0, "keyboard expansion does not jump to the group");
+  await guideCard.getByRole("button", { name: "Collapse New functions", exact: true }).press("Space");
+  await keyboardChevron.waitFor();
+  assert((await guideCard.locator(".guide-group.open").count()) === 0, "Space collapses the focused guide chevron");
   await guideCard.getByRole("button", { name: "Expand New functions", exact: true }).click();
   const expanded = guideCard.locator(".guide-group.open");
   assert((await expanded.innerText()).includes("g and h return constants for now.") && (await expanded.innerText()).includes("Adds g and h."), "expanding a section shows its overview and file rows with summaries");
@@ -278,6 +313,7 @@ try {
   await page.locator(".guide-group-row .tag", { hasText: "1 changed since" }).waitFor();
   assert((await page.locator(".guide-stale").innerText()) === "1 note is on code that has changed since", "the guide flags changed files and notes on changed code");
   assert((await page.locator(".note").count()) === 0, "a note on changed code no longer renders in the diff");
+  assert((await bCard.locator(".card-summary").count()) === 0, "a stale file summary is omitted from the current diff");
   await shot("guide-stale");
 
   const long = Array.from({ length: 70 }, (_, i) => `long ${i + 1}${[10, 30, 50].includes(i + 1) ? " changed" : ""}`).join("\n") + "\n";
@@ -362,7 +398,6 @@ try {
   await page.locator(".row", { hasText: "entire stack" }).click();
   await waitTitle(page, "Entire stack");
   const railActive = async () => {
-    // Let the scroll tracker run after the jump.
     await page.waitForTimeout(400);
     return page.locator(".files .row.file.active .fname").evaluate((el) => el.firstChild?.textContent);
   };
@@ -374,11 +409,63 @@ try {
   await page.keyboard.press("j");
   assert((await railActive()) === "feat_d.py", "j onto the last file keeps it selected");
 
+  await selectBranch(page, "feat-b");
+  const storeGuide = async (input: unknown) => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), "guide"], { cwd: root, stdin: new Response(JSON.stringify(input)), stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    assert(code === 0, `guide replacement succeeds (${out.trim()}${err})`);
+  };
+  await storeGuide({ ...guideInput, intent: "Duplicate group titles.", annotations: [], sections: guideInput.sections.map((s) => ({ ...s, title: "Same" })) });
+  await page.locator(".guide-intent", { hasText: "Duplicate group titles." }).waitFor({ timeout: 15_000 });
+  const duplicateGroups = guideCard.locator(".guide-group", { has: page.locator(".guide-group-title", { hasText: /^Same$/ }) });
+  await duplicateGroups.nth(0).getByRole("button", { name: "Expand Same", exact: true }).click();
+  assert((await duplicateGroups.nth(0).getByRole("button", { name: "Collapse Same", exact: true }).count()) === 1 && (await duplicateGroups.nth(1).getByRole("button", { name: "Expand Same", exact: true }).count()) === 1, "duplicate titles expand independently without duplicate React keys");
+
+  let firstGuide = true;
+  let releaseOld!: () => void;
+  let oldCaptured!: () => void;
+  const held = new Promise<void>((r) => { releaseOld = r; });
+  const captured = new Promise<void>((r) => { oldCaptured = r; });
+  await page.route("**/api/guides", async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    if (firstGuide) {
+      firstGuide = false;
+      oldCaptured();
+      await held;
+    }
+    await route.fulfill({ response, body });
+  });
+  await page.reload();
+  await captured;
+  await storeGuide({ ...guideInput, intent: "Newest guide wins.", annotations: [] });
+  await page.locator(".guide-intent", { hasText: "Newest guide wins." }).waitFor({ timeout: 15_000 });
+  releaseOld();
+  await page.waitForTimeout(300);
+  assert((await page.locator(".guide-intent").innerText()) === "Newest guide wins.", "a delayed older guide response cannot replace a newer guide");
+  await page.unroute("**/api/guides");
+
+  await rm(join(root, "feat_b.py"));
+  await symlink("notes.md", join(root, "feat_b.py"));
+  await chmod(join(root, "long.txt"), 0o755);
+  await page.locator(".pill").waitFor({ timeout: 15_000 });
+  await page.keyboard.press("r");
+  await page.evaluate(() => { location.hash = "#working"; });
+  await waitTitle(page, "Uncommitted changes", true);
+  const typeCard = page.locator(".card", { has: page.locator(".card-head .path", { hasText: "feat_b.py" }) });
+  await typeCard.locator(".card-note", { hasText: "Mode changed from 100644 to 120000" }).waitFor();
+  await typeCard.locator("diffs-container").waitFor();
+  assert((await typeCard.locator('[data-line-type="change-deletion"]', { hasText: "def f():" }).count()) > 0 && (await typeCard.getByText("notes.md", { exact: true }).count()) > 0, "a regular-file to symlink change renders the old file and new link contents");
+  const modeCard = page.locator(".card", { has: page.locator(".card-head .path", { hasText: "long.txt" }) });
+  await modeCard.locator(".card-note", { hasText: "Mode changed from 100644 to 100755" }).waitFor();
+  assert(true, "executable mode changes remain visible in the diff");
+
   assert(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   console.log(`\nall passed · screenshots in ${shots}`);
 } finally {
   await browser.close();
   server.stop();
+  await rm(root, { recursive: true, force: true });
 }
 
 async function selectBranch(page: Page, name: string) {

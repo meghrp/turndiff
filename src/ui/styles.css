@@ -49,7 +49,6 @@
   color-scheme: dark;
   --fg-mid: color-mix(in srgb, var(--fg) 55%, var(--fg-dim));
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  /* Secondary text that must stay legible: note actions, group headings, summaries. */
   --dim: color-mix(in srgb, var(--fg) 40%, var(--fg-dim));
   --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, monospace;
@@ -1063,7 +1062,6 @@ kbd {
   margin-bottom: 10px;
 }
 
-/* Author guides and notes. Notes use --mod so they never read as reviewer comments (--accent). */
 .md p,
 .md ul,
 .md ol,
@@ -1137,7 +1135,6 @@ kbd {
   color: var(--fg);
   margin-bottom: 4px;
 }
-/* Section rows share columns, so the counts line up whatever the title length. */
 .guide-groups {
   margin: 8px 0 0 -22px;
   display: grid;
@@ -1234,7 +1231,6 @@ kbd {
   color: var(--dim);
   font-size: 11px;
 }
-/* The section's overview, read right before its files. Quiet: a rule above, no box. */
 .group-head {
   margin: 18px 0 10px;
   padding-top: 10px;
@@ -1324,7 +1320,6 @@ kbd {
   color: color-mix(in srgb, var(--mod) 70%, var(--fg-dim));
   font-size: 11px;
 }
-/* The hunk `]`/`[` reached: a band over its changed rows that fades in 1.2s, and a bar that outlasts it. */
 .hunk-mark {
   position: absolute;
   left: 0;
