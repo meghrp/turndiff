@@ -24,8 +24,10 @@ jobs:
         with:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
+      - run: sh -n install.sh scripts/release.sh
       - run: bun run check
       - run: bun audit
       - run: bun run build
       - run: bunx --no-install playwright-core install --with-deps chromium
       - run: bun run e2e
+      - run: bun run release

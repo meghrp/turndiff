@@ -13,7 +13,8 @@
     "e2e": "bun scripts/e2e.ts",
     "scenario": "bun scripts/scenario.ts",
     "check": "bun run typecheck && bun test",
-    "build": "bun -e 'await import(\"./src/server/assets.ts\").then(m => m.ensureUiBuilt({force: true}))'"
+    "build": "bun -e 'await import(\"./src/server/assets.ts\").then(m => m.ensureUiBuilt({force: true}))'",
+    "release": "sh scripts/release.sh"
   },
   "dependencies": {
     "@pierre/diffs": "^1.4.2",
@@ -29,6 +30,12 @@
     "typescript": "^5.8.0"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meghrp/turndiff.git"
+  },
+  "homepage": "https://github.com/meghrp/turndiff#readme",
+  "bugs": "https://github.com/meghrp/turndiff/issues",
   "engines": {
     "bun": ">=1.3.10"
   },
@@ -36,6 +43,10 @@
     "bin",
     "src",
     "skills",
+    "assets",
+    "AGENTS.md",
+    "install.sh",
+    "bun.lock",
     "README.md",
     "LICENSE"
   ]

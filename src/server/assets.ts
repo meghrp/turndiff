@@ -57,13 +57,16 @@ export async function ensureUiBuilt(opts: { force?: boolean; log?: (msg: string)
   const css = await Bun.file(join(UI_SRC, "styles.css")).text();
   const cssName = `styles-${Bun.hash(css).toString(36)}.css`;
   await Bun.write(join(OUT_DIR, cssName), css);
+  const logo = await Bun.file(join(UI_SRC, "logo.svg")).text();
+  const logoName = `logo-${Bun.hash(logo).toString(36)}.svg`;
+  await Bun.write(join(OUT_DIR, logoName), logo);
   const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>turndiff</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23e6b450'/%3E%3C/svg%3E" />
+<link rel="icon" type="image/svg+xml" href="/${logoName}" />
 <link rel="stylesheet" href="/${cssName}" />
 </head>
 <body>

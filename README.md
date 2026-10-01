@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="640" alt="turndiff. Review branches, commits, and agent turns." />
+
 # turndiff
 
 A local review tool for stacked branches and the agents that write them. It reads your git-spice stack, shows each branch against its parent the way a GitHub PR does, lets you step through single commits and commit ranges, and sends every line comment you leave, on any branch, back to the agent as one markdown review.
@@ -45,13 +47,19 @@ The guide can also leave notes on line ranges. A note is anchored to the file's 
 
 turndiff runs on macOS and Linux and needs [Bun](https://bun.sh) 1.3.10 or later and git 2.40 or later. It reads git-spice metadata directly from `refs/spice/data`, so the `git-spice` binary is optional.
 
-Clone this repository, then run these commands from its root:
+[Download v0.1.0](https://github.com/meghrp/turndiff/releases/tag/v0.1.0) as `.tar.gz` or `.zip`, extract it to a directory you will keep, and run `./install.sh` inside it. The release includes SHA-256 checksums. This is a source installation, so Bun is required when you run turndiff.
+
+Or clone the repository:
 
 ```bash
-bun install --frozen-lockfile
-bun link            # puts `turndiff` on PATH via ~/.bun/bin
-turndiff install    # Claude Code hooks for turn recording, and the turndiff-review skill
+git clone https://github.com/meghrp/turndiff.git
+cd turndiff
+./install.sh
 ```
+
+The script installs the locked dependencies and links the `turndiff` command into Bun's bin directory, usually `~/.bun/bin`. Add that directory to `PATH` if your shell cannot find it. Keep the extracted or cloned directory in place; the command and optional recording hooks link to it. After updating a clone, run `./install.sh` again.
+
+For optional Claude Code turn recording and the agent review skill, run `turndiff install`.
 
 `turndiff install` adds `UserPromptSubmit` and `Stop` hooks to `~/.claude/settings.json` (it writes a backup next to it) and links `skills/turndiff-review` into `~/.claude/skills`. Claude Code and harnesses using its hook protocol can record turns. Other harnesses need to emit the same hook events; installation alone does not enable recording in them. Without the hooks, everything except turn views works. Installation preserves existing hooks and refuses to overwrite a skill directory you created yourself. Repeated installation is safe.
 
@@ -130,6 +138,8 @@ Turn recording includes tracked and untracked files that Git does not ignore, an
 ## Contributing
 
 Run `bun install --frozen-lockfile`, `bun run check`, and `bun run build` before submitting a change. For UI changes, install Chromium with the command above and run `bun run e2e`. Keep changes focused and include a reproduction or behavior test for bug fixes. Use a scratch repository for hook and daemon experiments.
+
+[AGENTS.md](AGENTS.md) provides the same starting instructions for coding agents. Maintainers can run `bun run release` from a clean checkout to create source archives and checksums from `HEAD` in `dist/release/`.
 
 ## License
 
