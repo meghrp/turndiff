@@ -2,16 +2,16 @@
 // turndiff: review git-spice stacks, commits and agent turns in the browser,
 // and hand the comments back to the agent.
 
-import { readFile, writeFile, mkdir, symlink, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { install } from "./install.ts";
 import { currentBranch, git, gitOrNull, repoPaths, type RepoPaths } from "./git/exec.ts";
 import { checkGuide, removeGuide, writeGuide } from "./git/guides.ts";
 import { deleteSession, listSessions, recordHook } from "./git/snapshots.ts";
 import { startServer } from "./server/index.ts";
-import { clearState, codeStamp, ensureDaemon, readState, stopDaemon, writeState } from "./server/daemon.ts";
+import { codeStamp, ensureDaemon, readState, ServerAlreadyRunningError, stopDaemon, withServerLease, writeState } from "./server/daemon.ts";
 import { targetToHash, type Target, type WaitResponse } from "./model.ts";
 
 const HELP = `turndiff: review stacked branches, commits and agent turns, send comments back to the agent
@@ -121,6 +121,15 @@ const str = (args: Args, key: string) => {
   return typeof v === "string" ? v : null;
 };
 
+function numberArg(args: Args, key: string, fallback: number, integer = true): number {
+  const raw = str(args, key);
+  const value = Number(raw ?? fallback);
+  if ((args.flags.has(key) && raw === null) || !Number.isFinite(value) || value < 0 || (integer && !Number.isSafeInteger(value))) {
+    throw new Error(`--${key} expects a non-negative ${integer ? "integer" : "number of seconds"}`);
+  }
+  return value;
+}
+
 async function commitOid(cwd: string, rev: string): Promise<string> {
   const oid = await gitOrNull(cwd, ["rev-parse", "-q", "--verify", `${rev}^{commit}`]);
   if (!oid) throw new Error(`unknown revision ${rev}`);
@@ -172,7 +181,9 @@ function openBrowser(url: string): void {
 /** Start or reuse the server, point the open tab (or a new one) at the target. */
 async function present(args: Args, paths: RepoPaths): Promise<string> {
   const target = await parseTarget(args, paths);
-  const { state, fresh } = await ensureDaemon(paths, Number(str(args, "port") ?? 0));
+  const port = numberArg(args, "port", 0);
+  if (port > 65535) throw new Error("--port must be between 0 and 65535");
+  const { state, fresh } = await ensureDaemon(paths, port);
   const hash = target ? targetToHash(target) : null;
   const url = `${state.url}/${hash ? `#${hash}` : ""}`;
   const { uiSeenAt } = (await (await fetch(`${state.url}/api/presence`)).json()) as { uiSeenAt: number };
@@ -190,20 +201,21 @@ async function cmdOpen(args: Args, paths: RepoPaths): Promise<number> {
 }
 
 async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
+  const timeoutMs = numberArg(args, "timeout", 0, false) * 1000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error("--timeout expects a non-negative number of seconds");
   let base = await present(args, paths);
-  // The default waits until the reviewer submits. Agents run this in the
-  // background and the harness wakes them when it exits with the feedback.
-  const timeoutMs = Number(str(args, "timeout") ?? 0) * 1000;
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.POSITIVE_INFINITY;
   const waiter = `${Date.now()}-${crypto.randomUUID()}`;
   process.stderr.write("turndiff: waiting for the reviewer to submit\n");
   while (Date.now() < deadline) {
     let res: Response;
     try {
-      res = await fetch(`${base}/api/wait?waiter=${waiter}`);
+      res = await fetch(`${base}/api/wait?waiter=${waiter}`, Number.isFinite(deadline) ? { signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - Date.now()))) } : undefined);
     } catch {
+      if (Date.now() >= deadline) break;
       // New turndiff code or a `turndiff` from another shell restarts the server; follow it.
-      const next = await reconnect(paths);
+      const next = await reconnect(paths, deadline);
+      if (Date.now() >= deadline) break;
       if (!next) {
         process.stderr.write("turndiff: the review server stopped before feedback was submitted\n");
         return 2;
@@ -226,30 +238,43 @@ async function cmdReview(args: Args, paths: RepoPaths): Promise<number> {
 }
 
 /** The URL of this worktree's server once it is answering again, or null after ~15s. */
-async function reconnect(paths: RepoPaths): Promise<string | null> {
-  for (let i = 0; i < 30; i++) {
-    await Bun.sleep(500);
+async function reconnect(paths: RepoPaths, deadline: number): Promise<string | null> {
+  for (let i = 0; i < 30 && Date.now() < deadline; i++) {
+    await Bun.sleep(Math.min(500, Math.max(1, deadline - Date.now())));
     const s = await readState(paths);
-    if (s && (await fetch(`${s.url}/api/presence`).then((r) => r.ok, () => false))) return s.url;
+    if (s && (await fetch(`${s.url}/api/presence`, { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, Math.ceil(deadline - Date.now())))) }).then((r) => r.ok, () => false))) return s.url;
   }
   return null;
 }
 
 /** Internal: the foreground server that `ensureDaemon` spawns detached. */
 async function cmdServe(args: Args, paths: RepoPaths): Promise<number> {
-  const code = codeStamp();
-  const server = await startServer({ paths, port: Number(str(args, "port") ?? 0) });
-  await writeState(paths, { pid: process.pid, port: server.port, url: server.url, startedAt: new Date().toISOString(), code });
-  const shutdown = async () => {
-    await clearState(paths, process.pid);
-    server.stop();
-    process.exit(0);
-  };
-  process.on("SIGTERM", () => void shutdown());
-  process.on("SIGINT", () => void shutdown());
-  process.stderr.write(`turndiff: serving ${paths.root} at ${server.url}\n`);
-  await new Promise(() => {});
-  return 0;
+  try {
+    return await withServerLease(paths, async () => {
+      const code = codeStamp();
+      const port = numberArg(args, "port", 0);
+      if (port > 65535) throw new Error("--port must be at most 65535");
+      const server = await startServer({ paths, port });
+      try {
+        await writeState(paths, { id: server.id, pid: process.pid, port: server.port, url: server.url, startedAt: new Date().toISOString(), code });
+        const shutdown = () => {
+          server.stop();
+          process.exit(0);
+        };
+        process.on("SIGTERM", shutdown);
+        process.on("SIGINT", shutdown);
+        process.stderr.write(`turndiff: serving ${paths.root} at ${server.url}\n`);
+        await new Promise(() => {});
+        return 0;
+      } finally {
+        server.stop();
+      }
+    });
+  } catch (e) {
+    if (!(e instanceof ServerAlreadyRunningError)) throw e;
+    process.stderr.write(`turndiff: ${e.message}\n`);
+    return 75;
+  }
 }
 
 async function cmdStop(paths: RepoPaths): Promise<number> {
@@ -275,8 +300,9 @@ async function cmdHook(): Promise<number> {
 }
 
 async function cmdClean(args: Args, paths: RepoPaths): Promise<number> {
+  const keep = numberArg(args, "keep", 5);
   const sessions = await listSessions(paths);
-  const targets = args.flags.has("all") ? sessions : sessions.slice(Number(str(args, "keep") ?? 5));
+  const targets = args.flags.has("all") ? sessions : sessions.slice(keep);
   for (const s of targets) {
     await deleteSession(paths, s);
     process.stdout.write(`removed session ${s.id} (${s.turns.length} turns)\n`);
@@ -325,36 +351,13 @@ async function cmdGuide(args: Args, paths: RepoPaths): Promise<number> {
 }
 
 async function cmdInstall(args: Args): Promise<number> {
-  const home = homedir();
-  const repoDir = dirname(dirname(fileURLToPath(import.meta.url)));
-  const skillsDir = join(home, ".claude", "skills");
-  await mkdir(skillsDir, { recursive: true });
-  const skillLink = join(skillsDir, "turndiff-review");
-  await rm(skillLink, { recursive: true, force: true });
-  await symlink(join(repoDir, "skills", "turndiff-review"), skillLink);
-  process.stdout.write(`skill: ${skillLink} -> ${join(repoDir, "skills", "turndiff-review")}\n`);
-  if (args.flags.has("skill-only")) return 0;
-
-  const settingsPath = join(home, ".claude", "settings.json");
-  const settings = existsSync(settingsPath) ? (JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>) : {};
-  const hooks = (settings.hooks ?? {}) as Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>>;
-  // Absolute paths: hook shells do not always share the interactive PATH.
-  const command = `${process.execPath} ${join(repoDir, "src", "cli.ts")} hook`;
-  let changed = false;
-  for (const event of ["UserPromptSubmit", "Stop"]) {
-    const list = hooks[event] ?? [];
-    if (!list.some((g) => g.hooks?.some((h) => h.command === command))) {
-      list.push({ hooks: [{ type: "command", command, timeout: 60 }] });
-      hooks[event] = list;
-      changed = true;
-    }
-  }
-  if (changed) {
-    if (existsSync(settingsPath)) await writeFile(`${settingsPath}.turndiff.bak`, await readFile(settingsPath));
-    settings.hooks = hooks;
-    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-    process.stdout.write(`hooks: added UserPromptSubmit + Stop to ${settingsPath} (backup at .turndiff.bak)\n`);
-  } else process.stdout.write(`hooks: already present in ${settingsPath}\n`);
+  const messages = await install({
+    homeDir: homedir(),
+    repoDir: dirname(dirname(fileURLToPath(import.meta.url))),
+    bunPath: process.execPath,
+    skillOnly: args.flags.has("skill-only"),
+  });
+  process.stdout.write(messages.join("\n") + "\n");
   return 0;
 }
 
