@@ -43,17 +43,17 @@ The guide can also leave notes on line ranges. A note is anchored to the file's 
 
 ## Install
 
-turndiff needs [Bun](https://bun.sh) and git 2.40 or later. It reads git-spice metadata directly from `refs/spice/data`, so the `git-spice` binary is optional.
+turndiff runs on macOS and Linux and needs [Bun](https://bun.sh) 1.3.10 or later and git 2.40 or later. It reads git-spice metadata directly from `refs/spice/data`, so the `git-spice` binary is optional.
+
+Clone this repository, then run these commands from its root:
 
 ```bash
-git clone <this repo> ~/Projects/turndiff
-cd ~/Projects/turndiff
-bun install
+bun install --frozen-lockfile
 bun link            # puts `turndiff` on PATH via ~/.bun/bin
 turndiff install    # Claude Code hooks for turn recording, and the turndiff-review skill
 ```
 
-`turndiff install` adds `UserPromptSubmit` and `Stop` hooks to `~/.claude/settings.json` (it writes a backup next to it) and links `skills/turndiff-review` into `~/.claude/skills`. The hooks also fire in harnesses built on Claude Code, such as T3 Code and the Agent SDK. Without the hooks, everything except turn views works.
+`turndiff install` adds `UserPromptSubmit` and `Stop` hooks to `~/.claude/settings.json` (it writes a backup next to it) and links `skills/turndiff-review` into `~/.claude/skills`. Claude Code and harnesses using its hook protocol can record turns. Other harnesses need to emit the same hook events; installation alone does not enable recording in them. Without the hooks, everything except turn views works. Installation preserves existing hooks and refuses to overwrite a skill directory you created yourself. Repeated installation is safe.
 
 ## Use
 
@@ -66,7 +66,7 @@ turndiff stop                  # stop this worktree's review server
 turndiff clean --keep 5        # drop old recorded agent sessions and any data left by v0
 ```
 
-Each worktree gets its own review server, started in the background on first use and reused after that. It restarts on its own port when turndiff's code changes, so an open tab reconnects. `turndiff review --branch feat-a` moves an already open tab to that branch instead of opening a second one. `turndiff review` waits until you submit. Agents run it as a background command, so the harness wakes them with your feedback when it exits. A newer `turndiff review` retires an older one that is still waiting, so one submission wakes one agent. Harnesses without background commands can pass `--timeout 540` and run it again on `Still waiting`.
+Each worktree gets its own review server, started in the background on first use and reused after that. It restarts on its own port when turndiff's code changes, so an open tab reconnects. `turndiff review --branch feat-a` moves an already open tab to that branch instead of opening a second one. `turndiff review` waits until you submit. Agents run it as a background command, so the harness wakes them with your feedback when it exits. A newer `turndiff review` retires an older one that is still waiting, so one submission wakes one agent. Feedback waiting for an agent is held for 10 minutes in the running server; restarting that server clears the pending delivery. Submitted reviews remain in the history directory. Harnesses without background commands can pass `--timeout 540` and run it again on `Still waiting`.
 
 ## How turn comparison works
 
@@ -111,10 +111,26 @@ src/scenario.ts       scratch repo with a stack and a branch-switching, restacki
 ## Development
 
 ```bash
-bun run typecheck
+bun run check             # TypeScript and unit/integration tests
+bun run build             # build the browser UI from scratch
+bunx --no-install playwright-core install chromium
 bun test                  # engine and server tests against the scenario repo
-bun run e2e               # drives the UI in Chrome against the scenario repo
+bun run e2e               # drives the UI in Playwright Chromium against the scenario repo
 bun scripts/scenario.ts   # build a scenario repo and print its path
 ```
 
-To try the UI by hand, build a scenario repo and run the server in the foreground with `cd "$(bun scripts/scenario.ts)" && bun ~/Projects/turndiff/src/cli.ts serve --port 4780`. The UI rebuilds when anything under `src/` is newer than `dist/ui/index.html`.
+After `bun link`, try the UI by hand with `cd "$(bun scripts/scenario.ts)" && turndiff serve --port 4780`. This builds a scenario repo and runs its server in the foreground. The UI rebuilds when anything under `src/` is newer than `dist/ui/index.html`. Set `PLAYWRIGHT_CHANNEL=chrome` to run the browser checks with an installed Chrome instead. GitHub Actions runs the checks on macOS and Linux.
+
+## Privacy
+
+The server listens only on `127.0.0.1`. Repository content, prompts, guides, and reviews stay on your computer. turndiff calls no model and sends no telemetry. The browser rejects other sites calling its API. Installation downloads dependencies, and links you open in guides can visit external sites.
+
+Turn recording includes tracked and untracked files that Git does not ignore, and stores their contents in local Git objects. Add private files to `.gitignore` before recording. `turndiff clean` removes old session references; normal Git garbage collection can later reclaim the objects.
+
+## Contributing
+
+Run `bun install --frozen-lockfile`, `bun run check`, and `bun run build` before submitting a change. For UI changes, install Chromium with the command above and run `bun run e2e`. Keep changes focused and include a reproduction or behavior test for bug fixes. Use a scratch repository for hook and daemon experiments.
+
+## License
+
+[MIT](LICENSE). Dependencies retain their own licenses.
