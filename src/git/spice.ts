@@ -38,22 +38,22 @@ export async function readSpice(cwd: string): Promise<SpiceRepo | null> {
   } catch {
     /* malformed repo blob; keep defaults */
   }
-  const listing = (await gitOrNull(cwd, ["ls-tree", "-r", "--name-only", DATA_REF, "branches/"])) ?? "";
-  const names = listing.split("\n").filter((l) => l.startsWith("branches/")).map((l) => l.slice("branches/".length));
+  const listing = (await gitOrNull(cwd, ["ls-tree", "-r", "--name-only", "-z", DATA_REF, "branches/"])) ?? "";
+  const names = listing.split("\0").filter((l) => l.startsWith("branches/")).map((l) => l.slice("branches/".length));
   const branches = new Map<string, SpiceBranch>();
   // One `git cat-file --batch` round trip instead of N `git show` calls.
   if (names.length > 0) {
     const batchInput = names.map((n) => `${DATA_REF}:branches/${n}`).join("\n") + "\n";
-    const out = await git(cwd, ["cat-file", "--batch"], { stdin: batchInput });
+    const out = Buffer.from(await git(cwd, ["cat-file", "--batch"], { stdin: batchInput }));
     let cursor = 0;
     for (const name of names) {
-      const headerEnd = out.indexOf("\n", cursor);
+      const headerEnd = out.indexOf(10, cursor);
       if (headerEnd === -1) break;
-      const header = out.slice(cursor, headerEnd);
+      const header = out.subarray(cursor, headerEnd).toString("utf8");
       cursor = headerEnd + 1;
       if (header.endsWith(" missing")) continue;
       const size = Number(header.split(" ")[2]);
-      const body = out.slice(cursor, cursor + size);
+      const body = out.subarray(cursor, cursor + size).toString("utf8");
       cursor += size + 1;
       try {
         const blob = JSON.parse(body) as BranchBlob;

@@ -11,7 +11,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { git, gitOrNull, gitRaw, repoPaths, type RepoPaths } from "./exec.ts";
-import { diffTrees, EMPTY_TREE, snapshotWorktree, treeOf, TURNDIFF_IDENT } from "./diff.ts";
+import { diffTrees, emptyTree, EMPTY_TREE, snapshotWorktree, treeOf, TURNDIFF_IDENT } from "./diff.ts";
 import { loadStack, logCommits, type Stack } from "./stack.ts";
 import type { Oid, Section, SessionSummary } from "../model.ts";
 
@@ -82,7 +82,7 @@ export async function captureSnapshot(paths: RepoPaths, id: string): Promise<Sna
   // One ref to a commit whose parents are every recorded tip keeps them all
   // alive after branches are rewritten and their old commits leave the reflog.
   const keep = [...new Set([worktree, ...Object.values(snap.heads), ...(snap.upstream ? [snap.upstream] : [])])];
-  const keeper = await git(paths.root, ["commit-tree", EMPTY_TREE, ...keep.flatMap((oid) => ["-p", oid]), "-m", `turndiff snapshot ${safe}`], { env: TURNDIFF_IDENT });
+  const keeper = await git(paths.root, ["commit-tree", await emptyTree(paths.root), ...keep.flatMap((oid) => ["-p", oid]), "-m", `turndiff snapshot ${safe}`], { env: TURNDIFF_IDENT });
   await git(paths.root, ["update-ref", snapshotRef(safe), keeper]);
   await writeJson(snapshotFile(paths, safe), snap);
   return snap;

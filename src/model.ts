@@ -134,6 +134,9 @@ export interface FileChange {
   /** Null on the absent side. Comments and viewed marks key on these. */
   oldBlob: Oid | null;
   newBlob: Oid | null;
+  /** Git modes, including executable files, symlinks, and submodules. Null on the absent side. */
+  oldMode: string | null;
+  newMode: string | null;
   /** This file's unified diff, git format with a full-index header. Empty for binary files. */
   patch: string;
 }
@@ -307,10 +310,19 @@ export function hashToTarget(hash: string): Target | null {
   const h = hash.replace(/^#/, "");
   if (h === "working" || h === "stack" || h === "since-review") return { kind: h };
   let m = /^branch\/(.+?)(\+working)?$/.exec(h);
-  if (m) return { kind: "branch", branch: decodeURIComponent(m[1]!), working: m[2] !== undefined };
+  if (m) {
+    try { return { kind: "branch", branch: decodeURIComponent(m[1]!), working: m[2] !== undefined }; }
+    catch { return null; }
+  }
   m = /^commits\/([0-9a-f]{4,64})\.\.([0-9a-f]{4,64})$/.exec(h);
   if (m) return { kind: "commits", from: m[1]!, to: m[2]! };
   m = /^turns\/([^/]+)\/(\d+)-(\d+)$/.exec(h);
-  if (m) return { kind: "turns", session: decodeURIComponent(m[1]!), from: Number(m[2]), to: Number(m[3]) };
+  if (m) {
+    const from = Number(m[2]);
+    const to = Number(m[3]);
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < from) return null;
+    try { return { kind: "turns", session: decodeURIComponent(m[1]!), from, to }; }
+    catch { return null; }
+  }
   return null;
 }

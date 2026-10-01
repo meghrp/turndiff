@@ -38,7 +38,6 @@ describe("notes", () => {
   test("falls back to the top at line 1, then below the range end, then the top", () => {
     const f = fd("@@ -1,2 +1,3 @@\n+0\n 1\n 2\n");
     expect(noteLine(f, anchor(1, 2))).toBe(0);
-    // Old line 2 is unchanged, so the note goes above the range start.
     expect(noteLine(fd(TWO_HUNKS), anchor(2, 2, "old"))).toBe(1);
     const far = fd("@@ -20,3 +20,4 @@\n 20\n+21\n 22\n 23\n");
     expect(noteLine(far, anchor(5, 21))).toBe(20);
@@ -86,4 +85,17 @@ test("guided order follows the guide's sections, then everything else, in branch
   ]);
   expect(order(view("branch"), false)).toEqual(["a", "b", "c", "d"].map((p) => [p, null]));
   expect(order(view("commits"), true)).toEqual(["a", "b", "c", "d"].map((p) => [p, null]));
+});
+
+test("type-change patches show both the removed file and the new symlink content", async () => {
+  const { parseFileDiff } = await import("./FileCard.tsx");
+  const file: FileChange = {
+    path: "link", oldPath: null, status: "modified", additions: 1, deletions: 1, binary: false,
+    oldBlob: "1".repeat(40), newBlob: "2".repeat(40), oldMode: "100644", newMode: "120000",
+    patch: `diff --git a/link b/link\ndeleted file mode 100644\nindex ${"1".repeat(40)}..${"0".repeat(40)}\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-regular\ndiff --git a/link b/link\nnew file mode 120000\nindex ${"0".repeat(40)}..${"2".repeat(40)}\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n`,
+  };
+  const diff = parseFileDiff(file)!;
+  expect(diff.deletionLines).toEqual(["regular\n"]);
+  expect(diff.additionLines).toEqual(["target"]);
+  expect(diff.hunks.map((h) => [h.deletionCount, h.additionCount])).toEqual([[1, 1]]);
 });

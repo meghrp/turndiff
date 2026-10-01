@@ -60,10 +60,9 @@ export interface RepoPaths {
 }
 
 export async function repoPaths(cwd: string): Promise<RepoPaths> {
-  const out = await git(cwd, ["rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"]);
-  const [root, commonDirRaw, gitDir] = out.split("\n");
-  const commonDir = commonDirRaw!.startsWith("/") ? commonDirRaw! : `${root}/${commonDirRaw}`;
-  return { root: root!, commonDir, gitDir: gitDir! };
+  const out = await git(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"]);
+  const [root, commonDir, gitDir] = out.split("\n");
+  return { root: root!, commonDir: commonDir!, gitDir: gitDir! };
 }
 
 export async function currentBranch(cwd: string): Promise<string | null> {

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parsePatchFiles, type FileDiffMetadata, type SelectedLineRange } from "@pierre/diffs";
+import { parseDiffFromFile, parsePatchFiles, type FileDiffMetadata, type SelectedLineRange } from "@pierre/diffs";
 import { FileDiff, type DiffLineAnnotation, type FileDiffOptions } from "@pierre/diffs/react";
 import { viewedKey, type Anchor, type Comment, type FileChange, type Section } from "../model.ts";
 import { api } from "./api.ts";
@@ -58,9 +58,17 @@ export const Counts = ({ add, del }: { add: number; del: number }) => (
   </span>
 );
 
-function parse(f: FileChange): FileDiffMetadata | null {
+export function parseFileDiff(f: FileChange): FileDiffMetadata | null {
   if (f.binary || !f.patch) return null;
-  const fd = parsePatchFiles(f.patch, `${f.oldBlob}:${f.newBlob}`)[0]?.files[0];
+  const files = parsePatchFiles(f.patch, `${f.oldBlob}:${f.newBlob}`)[0]?.files ?? [];
+  const deleted = files.find((f) => f.type === "deleted");
+  const added = files.find((f) => f.type === "new");
+  const fd = deleted && added
+    ? parseDiffFromFile(
+        { name: f.oldPath ?? f.path, contents: deleted.deletionLines.join(""), cacheKey: f.oldBlob ?? undefined },
+        { name: f.path, contents: added.additionLines.join(""), cacheKey: f.newBlob ?? undefined },
+      )
+    : files[0];
   return fd && fd.hunks.length > 0 ? fd : null;
 }
 
@@ -93,7 +101,7 @@ export const FileCard = memo(function FileCard({
 }) {
   const { file } = entry;
   const near = useNearViewport();
-  const fd = useMemo(() => (near.seen ? parse(file) : null), [near.seen, file]);
+  const fd = useMemo(() => (near.seen ? parseFileDiff(file) : null), [near.seen, file]);
   const [dir, name] = splitPath(file.path);
   const [large, setLarge] = useState(file.additions + file.deletions > LARGE_DIFF_LINES);
   const [drag, setDrag] = useState<SelectedLineRange | null>(null);
@@ -155,7 +163,6 @@ export const FileCard = memo(function FileCard({
         metadata: { kind: "comment", comment: c },
       }));
     for (const n of notes) out.push({ side: toPierreSide(n.anchor.side), lineNumber: noteLine(fd, n.anchor), metadata: { kind: "note", note: n } });
-    // A reply to a note outside the hunks has no rendered line to hang on; pin it to the top, like the note.
     if (composer) {
       const { side, end } = composer.anchor;
       out.push({ side: toPierreSide(side), lineNumber: lineInHunks(fd, side, end) ? end : 0, metadata: { kind: "composer" } });
@@ -257,6 +264,9 @@ export const FileCard = memo(function FileCard({
         </label>
       </header>
       {summary && !collapsed && near.seen && <Markdown className="card-summary" text={summary} />}
+      {!collapsed && file.oldMode && file.newMode && file.oldMode !== file.newMode && (
+        <div className="card-note">Mode changed from {file.oldMode} to {file.newMode}.</div>
+      )}
       {body()}
     </section>
   );

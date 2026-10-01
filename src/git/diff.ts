@@ -9,6 +9,10 @@ import { git, gitOrNull, type RepoPaths } from "./exec.ts";
 import type { FileChange, FileStatus, Oid } from "../model.ts";
 
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+export function emptyTree(cwd: string): Promise<Oid> {
+  return git(cwd, ["hash-object", "-w", "-t", "tree", "--stdin"], { stdin: "" });
+}
 export const TURNDIFF_IDENT = {
   GIT_AUTHOR_NAME: "turndiff",
   GIT_AUTHOR_EMAIL: "turndiff@localhost",
@@ -19,6 +23,11 @@ const ZERO_OID = /^0+$/;
 const RENAMES = ["--find-renames"];
 
 export async function diffTrees(cwd: string, base: Oid, head: Oid, opts: { ignoreWhitespace?: boolean } = {}): Promise<FileChange[]> {
+  if (base === EMPTY_TREE || head === EMPTY_TREE) {
+    const empty = await emptyTree(cwd);
+    if (base === EMPTY_TREE) base = empty;
+    if (head === EMPTY_TREE) head = empty;
+  }
   const ws = opts.ignoreWhitespace ? ["--ignore-all-space", "--ignore-blank-lines"] : [];
   const [raw, numstat, patch] = await Promise.all([
     git(cwd, ["diff", "--raw", "-z", "--no-abbrev", ...RENAMES, base, head]),
@@ -30,7 +39,10 @@ export async function diffTrees(cwd: string, base: Oid, head: Oid, opts: { ignor
   return parseRaw(raw).map((entry) => {
     const count = counts.get(entry.path);
     const binary = count?.binary ?? false;
-    const chunk = chunks.get(`${entry.oldBlob ?? "0"}..${entry.newBlob ?? "0"}`)?.shift() ?? "";
+    const typeChanged = entry.oldMode && entry.newMode && entry.oldMode.slice(0, 3) !== entry.newMode.slice(0, 3);
+    const chunk = typeChanged
+      ? (chunks.get(`${entry.oldBlob}..0`)?.shift() ?? "") + (chunks.get(`0..${entry.newBlob}`)?.shift() ?? "")
+      : (chunks.get(`${entry.oldBlob ?? "0"}..${entry.newBlob ?? "0"}`)?.shift() ?? "");
     return {
       ...entry,
       additions: count?.additions ?? 0,
@@ -41,7 +53,7 @@ export async function diffTrees(cwd: string, base: Oid, head: Oid, opts: { ignor
   });
 }
 
-type RawEntry = Pick<FileChange, "path" | "oldPath" | "status" | "oldBlob" | "newBlob">;
+type RawEntry = Pick<FileChange, "path" | "oldPath" | "status" | "oldBlob" | "newBlob" | "oldMode" | "newMode">;
 
 /** `git diff --raw -z`: ":<mode> <mode> <old> <new> <status>\0<path>\0[<new path>\0]". */
 export function parseRaw(raw: string): RawEntry[] {
@@ -50,19 +62,21 @@ export function parseRaw(raw: string): RawEntry[] {
   for (let i = 0; i < parts.length; i++) {
     const meta = parts[i]!;
     if (!meta.startsWith(":")) continue;
-    const [, , oldOid, newOid, code] = meta.slice(1).split(" ");
+    const [oldModeRaw, newModeRaw, oldOid, newOid, code] = meta.slice(1).split(" ");
+    const oldMode = oldModeRaw === "000000" ? null : oldModeRaw!;
+    const newMode = newModeRaw === "000000" ? null : newModeRaw!;
     const letter = code![0]!;
     const oldBlob = ZERO_OID.test(oldOid!) ? null : oldOid!;
     const newBlob = ZERO_OID.test(newOid!) ? null : newOid!;
     if (letter === "R" || letter === "C") {
       const from = parts[++i]!;
       const to = parts[++i]!;
-      out.push({ path: to, oldPath: from, status: letter === "R" ? "renamed" : "added", oldBlob: letter === "R" ? oldBlob : null, newBlob });
+      out.push({ path: to, oldPath: from, status: letter === "R" ? "renamed" : "added", oldBlob: letter === "R" ? oldBlob : null, newBlob, oldMode: letter === "R" ? oldMode : null, newMode });
       continue;
     }
     const path = parts[++i]!;
     const status: FileStatus = letter === "A" ? "added" : letter === "D" ? "deleted" : "modified";
-    out.push({ path, oldPath: null, status, oldBlob, newBlob });
+    out.push({ path, oldPath: null, status, oldBlob, newBlob, oldMode, newMode });
   }
   return out;
 }
@@ -81,7 +95,11 @@ export function parseNumstat(raw: string): Numstat[] {
   for (let i = 0; i < parts.length; i++) {
     const rec = parts[i]!;
     if (rec.length === 0) continue;
-    const [add, del, inlinePath] = rec.split("\t");
+    const firstTab = rec.indexOf("\t");
+    const secondTab = rec.indexOf("\t", firstTab + 1);
+    const add = rec.slice(0, firstTab);
+    const del = rec.slice(firstTab + 1, secondTab);
+    const inlinePath = rec.slice(secondTab + 1);
     const binary = add === "-";
     let path = inlinePath ?? "";
     if (path.length === 0) {
