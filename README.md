@@ -4,6 +4,14 @@
 
 A local review tool for stacked branches and the agents that write them. It reads your git-spice stack, shows each branch against its parent the way a GitHub PR does, lets you step through single commits and commit ranges, and sends every line comment you leave, on any branch, back to the agent as one markdown review.
 
+![Demo branch review with a stack navigator, author guide, and inline notes](assets/screenshots/branch-review.png)
+
+*Review branches with a stack navigator, an author guide, and inline notes.*
+
+![Demo review panel collecting line comments from two branches](assets/screenshots/review-feedback.png)
+
+*Collect comments from multiple branches and send one review back to the agent.*
+
 ## What you can review
 
 - **A branch** against its parent branch. For the checked-out branch this includes uncommitted changes when there are any.
