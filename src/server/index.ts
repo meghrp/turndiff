@@ -11,10 +11,11 @@ import { captureSnapshot, listSessions, summarize } from "../git/snapshots.ts";
 import { resolveView, TargetError } from "../git/views.ts";
 import { guidesVersion, readGuides } from "../git/guides.ts";
 import { formatFeedback } from "../feedback.ts";
-import { outdatedComments, ReviewStore } from "./store.ts";
+import { outdatedComments, ReviewStore, type ReviewDraft } from "./store.ts";
 import { hashToTarget, type Comment, type Decision, type RepoState, type SubmitResponse, type WaitResponse } from "../model.ts";
 
 export interface RunningServer {
+  id: string;
   url: string;
   port: number;
   stop(): void;
@@ -28,6 +29,7 @@ const DECISIONS: readonly Decision[] = ["approve", "request_changes", "comment"]
 
 export async function startServer(opts: { paths: RepoPaths; port: number }): Promise<RunningServer> {
   const { paths } = opts;
+  const id = crypto.randomUUID();
   // Built on the first page request so the API is up at once.
   let ui: Promise<string> | null = null;
   const store = await ReviewStore.open(paths);
@@ -86,26 +88,28 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
     };
   }
 
-  async function feedback(decision: Decision) {
+  async function feedback(decision: Decision, draft: ReviewDraft = store.draft()) {
     const { stack } = await current();
     return formatFeedback({
       decision,
-      summary: store.summary,
-      comments: [...store.comments],
-      outdated: await outdatedComments(paths, stack, store.comments),
+      summary: draft.summary,
+      comments: draft.comments,
+      outdated: await outdatedComments(paths, stack, draft.comments),
       branchOrder: stack.branches.map((b) => b.name),
       prs: new Map(stack.branches.flatMap((b) => (b.pr ? [[b.name, b.pr.number] as const] : []))),
       usesSpice: stack.spice,
     });
   }
 
-  async function submit(decision: Decision, summary: string): Promise<SubmitResponse> {
-    await store.setSummary(summary);
-    const markdown = await feedback(decision);
-    const snap = await captureSnapshot(paths, `review-${Date.now()}`);
-    await store.submitted({ decision, markdown, snapshot: snap.id });
+  async function submit(decision: Decision, summary?: string): Promise<SubmitResponse> {
+    const saved = await store.submit({ decision, summary }, async (draft) => {
+      const markdown = await feedback(decision, draft);
+      const snap = await captureSnapshot(paths, `review-${crypto.randomUUID()}`);
+      return { markdown, snapshot: snap.id };
+    });
+    const { markdown } = saved;
     const delivered = agentAttached();
-    const submission = { decision, markdown, submittedAt: new Date().toISOString() };
+    const submission = { decision, ...saved };
     if (waiter) {
       waiter.resolve(submission);
       waiter = null;
@@ -168,7 +172,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
         lastUiAt = Date.now();
         return json(await repoState());
       }),
-      "/api/presence": route(async () => json({ uiSeenAt: lastUiAt })),
+      "/api/presence": route(async () => json({ uiSeenAt: lastUiAt, id, pid: process.pid, root: paths.root })),
       "/api/view": route(async (req) => {
         const url = new URL(req.url);
         const target = hashToTarget(url.searchParams.get("t") ?? "");
@@ -202,7 +206,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       },
       "/api/viewed": {
         PUT: route(async (req) => {
-          const body = (await req.json()) as { key?: unknown; viewed?: unknown };
+          const body = object(await req.json());
           if (typeof body.key !== "string" || typeof body.viewed !== "boolean") throw new BadRequest("expected { key, viewed }");
           await store.setViewed(body.key, body.viewed);
           return json(await reviewState());
@@ -210,7 +214,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       },
       "/api/summary": {
         PUT: route(async (req) => {
-          const body = (await req.json()) as { summary?: unknown };
+          const body = object(await req.json());
           if (typeof body.summary !== "string") throw new BadRequest("expected { summary }");
           await store.setSummary(body.summary);
           return json(await reviewState());
@@ -219,13 +223,13 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
       "/api/feedback": route(async (req) => json({ markdown: await feedback(parseDecision(new URL(req.url).searchParams.get("decision") ?? "comment")) })),
       "/api/submit": {
         POST: route(async (req) => {
-          const body = (await req.json()) as { decision?: unknown; summary?: unknown };
-          return json(await submit(parseDecision(body.decision), typeof body.summary === "string" ? body.summary : store.summary));
+          const body = object(await req.json());
+          return json(await submit(parseDecision(body.decision), typeof body.summary === "string" ? body.summary : undefined));
         }),
       },
       "/api/focus": {
         POST: route(async (req) => {
-          const body = (await req.json()) as { hash?: unknown };
+          const body = object(await req.json());
           if (typeof body.hash !== "string" || !hashToTarget(body.hash)) throw new BadRequest("expected { hash } of a target");
           focus = { hash: body.hash, at: Date.now() };
           return json({ ok: true });
@@ -257,7 +261,7 @@ export async function startServer(opts: { paths: RepoPaths; port: number }): Pro
   }, 60_000);
   idle.unref();
 
-  return { url: `http://127.0.0.1:${server.port}`, port: server.port!, stop: () => server.stop(true) };
+  return { id, url: `http://127.0.0.1:${server.port}`, port: server.port!, stop: () => { clearInterval(idle); server.stop(true); } };
 }
 
 class BadRequest extends Error {}
@@ -282,27 +286,39 @@ function parseDecision(raw: unknown): Decision {
 }
 
 function parseComment(raw: unknown, id: string): Comment {
-  const c = raw as Comment;
-  const a = c?.anchor;
+  const c = object(raw);
+  const a = object(c.anchor);
+  const origin = object(c.origin);
   const ok =
-    c &&
     c.id === id &&
     typeof c.body === "string" &&
-    a &&
     typeof a.path === "string" &&
     a.path.length > 0 &&
     !/[\n\0]/.test(a.path) &&
     (a.side === "old" || a.side === "new") &&
-    Number.isInteger(a.start) &&
-    Number.isInteger(a.end) &&
-    typeof a.blob === "string" &&
+    typeof a.start === "number" && Number.isSafeInteger(a.start) && a.start >= 1 &&
+    typeof a.end === "number" && Number.isSafeInteger(a.end) && a.end >= a.start &&
+    typeof a.blob === "string" && /^[0-9a-f]{40,64}$/.test(a.blob) &&
     Array.isArray(c.snippet) &&
-    c.origin &&
-    typeof c.origin.head === "string" &&
-    typeof c.origin.working === "boolean" &&
-    typeof c.origin.target === "object" &&
+    c.snippet.every((line: unknown) => typeof line === "string") &&
+    (origin.branch === null || typeof origin.branch === "string") &&
+    typeof origin.head === "string" &&
+    typeof origin.working === "boolean" &&
     typeof c.createdAt === "string" &&
     typeof c.updatedAt === "string";
   if (!ok) throw new BadRequest("malformed comment");
-  return c;
+  const target = object(origin.target);
+  const kind = target.kind;
+  const validTarget =
+    kind === "working" || kind === "stack" || kind === "since-review" ||
+    (kind === "branch" && typeof target.branch === "string" && typeof target.working === "boolean") ||
+    (kind === "commits" && typeof target.from === "string" && typeof target.to === "string" && /^[0-9a-f]{4,64}$/.test(target.from) && /^[0-9a-f]{4,64}$/.test(target.to)) ||
+    (kind === "turns" && typeof target.session === "string" && typeof target.from === "number" && Number.isSafeInteger(target.from) && target.from >= 1 && typeof target.to === "number" && Number.isSafeInteger(target.to) && target.to >= target.from);
+  if (!validTarget) throw new BadRequest("malformed comment target");
+  return raw as Comment;
+}
+
+function object(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new BadRequest("expected a JSON object");
+  return raw as Record<string, unknown>;
 }

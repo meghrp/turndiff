@@ -2,7 +2,7 @@
 // summary, and viewed marks. The server process is the only writer, so the
 // in-memory copy is authoritative and each change is persisted atomically.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git, type RepoPaths } from "../git/exec.ts";
@@ -15,6 +15,8 @@ interface Stored {
   viewed: string[];
   lastReview: { at: string; snapshot: string } | null;
 }
+
+export type ReviewDraft = Pick<ReviewState, "comments" | "summary">;
 
 export class ReviewStore {
   private writes: Promise<void> = Promise.resolve();
@@ -44,60 +46,78 @@ export class ReviewStore {
   }
 
   async state(stack: Stack): Promise<ReviewState> {
-    const outdated = await outdatedComments(this.paths, stack, this.data.comments);
-    return { comments: this.data.comments, summary: this.data.summary, viewed: this.data.viewed, outdated: [...outdated] };
+    const data = this.data;
+    const outdated = await outdatedComments(this.paths, stack, data.comments);
+    return { comments: data.comments, summary: data.summary, viewed: data.viewed, outdated: [...outdated] };
+  }
+
+  draft(): ReviewDraft {
+    return structuredClone({ comments: this.data.comments, summary: this.data.summary });
   }
 
   upsertComment(comment: Comment): Promise<void> {
-    const rest = this.data.comments.filter((c) => c.id !== comment.id);
-    this.data = { ...this.data, comments: [...rest, comment] };
-    return this.persist();
+    const saved = structuredClone(comment);
+    return this.enqueue(() => this.persist({ ...this.data, comments: [...this.data.comments.filter((c) => c.id !== saved.id), saved] }));
   }
 
   deleteComment(id: string): Promise<void> {
-    this.data = { ...this.data, comments: this.data.comments.filter((c) => c.id !== id) };
-    return this.persist();
+    return this.enqueue(() => this.persist({ ...this.data, comments: this.data.comments.filter((c) => c.id !== id) }));
   }
 
   setViewed(key: string, viewed: boolean): Promise<void> {
-    const rest = this.data.viewed.filter((k) => k !== key);
-    this.data = { ...this.data, viewed: viewed ? [...rest, key] : rest };
-    return this.persist();
+    return this.enqueue(() => {
+      const rest = this.data.viewed.filter((k) => k !== key);
+      return this.persist({ ...this.data, viewed: viewed ? [...rest, key] : rest });
+    });
   }
 
   setSummary(summary: string): Promise<void> {
-    this.data = { ...this.data, summary };
-    return this.persist();
+    return this.enqueue(() => this.persist({ ...this.data, summary }));
   }
 
-  /** Archive the submitted review and start a fresh one. Viewed marks stay: they follow content. */
-  async submitted(entry: { decision: Decision; markdown: string; snapshot: string }): Promise<void> {
-    const at = new Date().toISOString();
-    const dir = join(this.paths.gitDir, "turndiff", "history");
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, `${at.replace(/[:.]/g, "-")}.json`), JSON.stringify({ at, ...entry, comments: this.data.comments, summary: this.data.summary }, null, 2));
-    this.data = { ...this.data, comments: [], summary: "", lastReview: { at, snapshot: entry.snapshot } };
-    return this.persist();
-  }
-
-  private persist(): Promise<void> {
-    const snapshot = JSON.stringify(this.data);
-    this.writes = this.writes.then(async () => {
-      const file = reviewFile(this.paths);
-      await mkdir(join(file, ".."), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      await writeFile(tmp, snapshot);
+  /** Prepare and archive one draft atomically with respect to all review mutations. Later edits form the next review. */
+  submit(
+    request: { decision: Decision; summary?: string },
+    prepare: (draft: ReviewDraft) => Promise<{ markdown: string; snapshot: string }>,
+  ): Promise<{ markdown: string; submittedAt: string }> {
+    return this.enqueue(async () => {
+      if (request.summary !== undefined) await this.persist({ ...this.data, summary: request.summary });
+      const draft = this.draft();
+      const entry = await prepare(structuredClone(draft));
+      const at = new Date().toISOString();
+      const dir = join(this.paths.gitDir, "turndiff", "history");
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, `${at.replace(/[:.]/g, "-")}-${crypto.randomUUID()}.json`);
+      const tmp = `${file}.tmp`;
+      await writeFile(tmp, JSON.stringify({ at, decision: request.decision, ...entry, ...draft }, null, 2));
       await rename(tmp, file);
+      await this.persist({ ...this.data, comments: [], summary: "", lastReview: { at, snapshot: entry.snapshot } });
+      return { markdown: entry.markdown, submittedAt: at };
     });
-    return this.writes;
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writes.then(operation);
+    this.writes = result.then(() => {}, () => {});
+    return result;
+  }
+
+  private async persist(next: Stored): Promise<void> {
+    const file = reviewFile(this.paths);
+    await mkdir(join(file, ".."), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify(next));
+    await rename(tmp, file);
+    this.data = next;
   }
 }
 
-function isFile(path: string): boolean {
+function fileKind(path: string): "file" | "symlink" | null {
   try {
-    return statSync(path).isFile();
+    const stat = lstatSync(path);
+    return stat.isSymbolicLink() ? "symlink" : stat.isFile() ? "file" : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -114,14 +134,24 @@ export async function outdatedComments(paths: RepoPaths, stack: Stack, comments:
   const tips = new Map(stack.branches.map((b) => [b.name, b.tip]));
   const live = comments.filter((c) => c.anchor.side === "new" && c.origin.branch !== null && tips.has(c.origin.branch));
   const found = new Set<string>();
-  if (live.length > 0) {
-    const out = await git(paths.root, ["cat-file", "--batch-check=%(objectname)"], { stdin: live.map((c) => `${tips.get(c.origin.branch!)}:${c.anchor.path}`).join("\n") + "\n" });
-    out.split("\n").forEach((line, i) => line === live[i]!.anchor.blob && found.add(live[i]!.id));
+  for (const branch of new Set(live.map((c) => c.origin.branch!))) {
+    const comments = live.filter((c) => c.origin.branch === branch);
+    const out = await git(paths.root, ["ls-tree", "-r", "-z", tips.get(branch)!, "--", ...new Set(comments.map((c) => c.anchor.path))]);
+    const blobs = new Map(out.split("\0").filter(Boolean).map((entry) => {
+      const tab = entry.indexOf("\t");
+      return [entry.slice(tab + 1), entry.slice(0, tab).split(" ")[2]!] as const;
+    }));
+    for (const c of comments) if (blobs.get(c.anchor.path) === c.anchor.blob) found.add(c.id);
   }
-  const onDisk = live.filter((c) => !found.has(c.id) && c.origin.branch === stack.worktree.branch && isFile(join(paths.root, c.anchor.path)));
-  if (onDisk.length > 0) {
-    const out = await git(paths.root, ["hash-object", "--stdin-paths"], { stdin: onDisk.map((c) => c.anchor.path).join("\n") + "\n" });
-    out.split("\n").forEach((oid, i) => oid === onDisk[i]!.anchor.blob && found.add(onDisk[i]!.id));
+  const onDisk = live.filter((c) => !found.has(c.id) && c.origin.branch === stack.worktree.branch);
+  const files = onDisk.filter((c) => fileKind(join(paths.root, c.anchor.path)) === "file");
+  if (files.length > 0) {
+    const out = await git(paths.root, ["hash-object", "--", ...files.map((c) => c.anchor.path)]);
+    out.split("\n").forEach((oid, i) => oid === files[i]!.anchor.blob && found.add(files[i]!.id));
+  }
+  for (const c of onDisk.filter((c) => fileKind(join(paths.root, c.anchor.path)) === "symlink")) {
+    const oid = await git(paths.root, ["hash-object", "--stdin"], { stdin: readlinkSync(join(paths.root, c.anchor.path)) });
+    if (oid === c.anchor.blob) found.add(c.id);
   }
   return new Set(live.filter((c) => !found.has(c.id)).map((c) => c.id));
 }

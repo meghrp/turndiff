@@ -148,3 +148,45 @@ test("/api/guides lists every stored guide, and RepoState.guidesVersion follows 
   expect(guides.map((g) => [g.branch, g.intent, g.sections[0]!.files[0]!.blob])).toEqual([["feat-c", "Add C.", await git(sc.root, ["rev-parse", "feat-c:feat_c.py"])]]);
   expect((await fetch(`${server.url}/api/guides`, { headers: { origin: "https://evil.example" } })).status).toBe(403);
 });
+
+test("malformed comments and null request bodies cannot corrupt a saved review", async () => {
+  const before = await api<ReviewState>("/api/review");
+  const valid: Comment = {
+    id: "invalid-fixture", body: "body", anchor: { path: "x", side: "new", start: 1, end: 1, blob: "1".repeat(40) }, snippet: ["x"],
+    origin: { branch: null, head: "2".repeat(40), working: false, target: { kind: "working" } }, createdAt: "2026-01-01", updatedAt: "2026-01-01",
+  };
+  const invalid = [
+    { ...valid, origin: { ...valid.origin, target: null } },
+    { ...valid, origin: { ...valid.origin, target: { kind: "branch" } } },
+    { ...valid, snippet: [{ bad: "line" }] },
+    { ...valid, anchor: { ...valid.anchor, start: -1 } },
+    { ...valid, anchor: { ...valid.anchor, end: 0 } },
+    { ...valid, anchor: { ...valid.anchor, blob: "invalid" } },
+  ];
+  for (const value of invalid) {
+    expect((await fetch(`${server.url}/api/comments/invalid-fixture`, { method: "PUT", body: JSON.stringify(value) })).status).toBe(400);
+  }
+  for (const [path, method] of [["/api/viewed", "PUT"], ["/api/summary", "PUT"], ["/api/submit", "POST"], ["/api/focus", "POST"]]) {
+    expect((await fetch(`${server.url}${path}`, { method, body: "null" })).status).toBe(400);
+  }
+  expect(await api<ReviewState>("/api/review")).toEqual(before);
+});
+
+test("a failed submission never wakes the agent and a corrected retry delivers", async () => {
+  const paths = await repoPaths(sc.root);
+  const { mkdir } = await import("node:fs/promises");
+  const history = `${paths.gitDir}/turndiff/history`;
+  await rm(history, { recursive: true, force: true });
+  await Bun.write(history, "obstruction");
+  const waiting = api<WaitResponse>("/api/wait?waiter=10-retry");
+  await Bun.sleep(100);
+  const failed = await fetch(`${server.url}/api/submit`, { method: "POST", body: JSON.stringify({ decision: "comment", summary: "retry me" }) });
+  expect(failed.status).toBe(500);
+  expect((await api<ReviewState>("/api/review")).summary).toBe("retry me");
+  expect((await api<RepoState>("/api/state")).agentWaiting).toBe(true);
+  await rm(history);
+  await mkdir(history);
+  const retried = await api<SubmitResponse>("/api/submit", { method: "POST", body: JSON.stringify({ decision: "comment" }) });
+  expect((await waiting).markdown).toBe(retried.markdown);
+  expect(retried.markdown).toContain("retry me");
+});
