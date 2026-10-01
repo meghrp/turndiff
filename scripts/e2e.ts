@@ -164,16 +164,35 @@ try {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("clipboard denied"); } } });
     document.execCommand = () => false;
   });
+  let releaseSummary!: () => void;
+  let summaryCaptured!: () => void;
+  const summaryGate = new Promise<void>((r) => { releaseSummary = r; });
+  const summaryStarted = new Promise<void>((r) => { summaryCaptured = r; });
+  await page.route("**/api/summary", async (route) => {
+    summaryCaptured();
+    await summaryGate;
+    await route.continue();
+  });
   await drawer.locator(".summary").fill("Clipboard recovery review.");
+  await summaryStarted;
+  let submittedWhileSaving = false;
+  const watchSubmit = (request: { url(): string }) => { if (request.url().endsWith("/api/submit")) submittedWhileSaving = true; };
+  page.on("request", watchSubmit);
   const recoveryResponse = page.waitForResponse((r) => r.url().endsWith("/api/submit") && r.request().method() === "POST");
   await drawer.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.waitForTimeout(200);
+  assert(!submittedWhileSaving && await drawer.getByRole("button", { name: "Comment", exact: true }).isDisabled(), "submission waits for a summary autosave that is already in flight");
+  page.off("request", watchSubmit);
+  releaseSummary();
   const recovery = await (await recoveryResponse).json() as { markdown: string };
+  await page.unroute("**/api/summary");
   await drawer.locator(".status-line.err", { hasText: "clipboard is unavailable" }).waitFor({ timeout: 5000 }).catch(async (e) => {
     throw new Error(`clipboard failure recovery: ${JSON.stringify(recovery)}; status: ${await drawer.locator(".status-line").innerText()}; ${e}`);
   });
   await drawer.getByRole("button", { name: "Close review" }).click();
   await page.locator(".review-btn").click();
   await drawer.getByRole("button", { name: "Copy submitted", exact: true }).waitFor();
+  assert(await drawer.locator(".summary").inputValue() === "" && ((await (await fetch(`${server.url}/api/review`)).json()) as { summary: string }).summary === "", "a delayed prior summary does not leak into the next review or reopened panel");
   await page.evaluate(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => {
       (window as Window & { copiedReview?: string }).copiedReview = text;

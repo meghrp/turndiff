@@ -27,6 +27,14 @@ async function call<T>(path: string, init?: RequestInit & { json?: unknown }): P
   return res.json() as Promise<T>;
 }
 
+let reviewWrites: Promise<void> = Promise.resolve();
+
+function queueReview<T>(operation: () => Promise<T>): Promise<T> {
+  const result = reviewWrites.then(operation);
+  reviewWrites = result.then(() => {}, () => {});
+  return result;
+}
+
 export const api = {
   state: () => call<RepoState>("/api/state"),
   view: (t: Target, ws: boolean, signal?: AbortSignal) =>
@@ -41,9 +49,9 @@ export const api = {
   putComment: (c: Comment) => call<ReviewState>(`/api/comments/${encodeURIComponent(c.id)}`, { method: "PUT", json: c }),
   deleteComment: (id: string) => call<ReviewState>(`/api/comments/${encodeURIComponent(id)}`, { method: "DELETE" }),
   setViewed: (key: string, viewed: boolean) => call<ReviewState>("/api/viewed", { method: "PUT", json: { key, viewed } }),
-  setSummary: (summary: string) => call<ReviewState>("/api/summary", { method: "PUT", json: { summary } }),
-  feedback: (decision: Decision) => call<{ markdown: string }>(`/api/feedback?decision=${decision}`),
-  submit: (decision: Decision, summary: string) => call<SubmitResponse>("/api/submit", { method: "POST", json: { decision, summary } }),
+  setSummary: (summary: string) => queueReview(() => call<ReviewState>("/api/summary", { method: "PUT", json: { summary } })),
+  feedback: (decision: Decision) => queueReview(() => call<{ markdown: string }>(`/api/feedback?decision=${decision}`)),
+  submit: (decision: Decision, summary: string) => queueReview(() => call<SubmitResponse>("/api/submit", { method: "POST", json: { decision, summary } })),
 };
 
 export async function copyText(text: string): Promise<boolean> {
